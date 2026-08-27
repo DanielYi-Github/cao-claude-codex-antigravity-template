@@ -1,0 +1,28 @@
+{
+  "project": {
+    "id": "demo-project",
+    "name": "CAO Demo Project",
+    "health_score": 87,
+    "updated_at": "2026-08-28T00:00:00Z"
+  },
+  "checks": [
+    {
+      "id": "build",
+      "label": "Build",
+      "status": "passing",
+      "duration_ms": 842
+    },
+    {
+      "id": "tests",
+      "label": "Tests",
+      "status": "passing",
+      "duration_ms": 1260
+    },
+    {
+      "id": "dependency-audit",
+      "label": "Dependency audit",
+      "status": "warning",
+      "duration_ms": 438
+    }
+  ]
+}

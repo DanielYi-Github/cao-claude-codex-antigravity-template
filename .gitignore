@@ -1,0 +1,36 @@
+# CAO project runtime (database, logs, FIFOs, installed profiles, journal)
+# Keep .cao/profiles/, .cao/skills/, and .cao/workflows/ tracked.
+.cao/runtime/
+.cao/db/
+.cao/logs/
+.cao/fifos/
+.cao/locks/
+.cao/agent-store/
+.cao/agent-context/
+.cao/graph-exports/
+.cao/settings.json
+.cao/.env
+
+# Runtime artifacts may contain model output; keep the directory but ignore files.
+artifacts/*
+!artifacts/README.md
+
+# Secrets and local environment files
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Python caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local editor and OS files
+.DS_Store
+.idea/
+.vscode/
+
+# Optional sibling worktrees created for workers
+.worktrees/
