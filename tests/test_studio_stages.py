@@ -70,6 +70,31 @@ def tiny_video_bytes(tmp_path_factory) -> bytes:
     return path.read_bytes()
 
 
+@pytest.fixture(scope="session")
+def eight_second_clip_bytes(tmp_path_factory) -> bytes:
+    """A real 8.0s clip, matching what a clip_1080p asset must measure to
+    build an exact 64s macro-loop (stages.SEGMENT_SECONDS)."""
+    path = tmp_path_factory.mktemp("fixtures") / "eight_seconds.mp4"
+    subprocess.run(
+        [
+            "ffmpeg", "-y", "-f", "lavfi", "-i", "color=c=red:s=64x64:r=16:d=8",
+            "-pix_fmt", "yuv420p", str(path),
+        ],
+        check=True, capture_output=True,
+    )
+    return path.read_bytes()
+
+
+@pytest.fixture(scope="session")
+def short_audio_path(tmp_path_factory) -> Path:
+    path = tmp_path_factory.mktemp("fixtures") / "tone.wav"
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=5", str(path)],
+        check=True, capture_output=True,
+    )
+    return path
+
+
 def _write_png(dest: Path) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     Image.new("RGB", (12, 8)).save(dest)
@@ -389,3 +414,125 @@ def test_generate_keyframe_stays_local_even_when_remote_comfyui_is_configured(tm
     assert db.asset(asset_id)["status"] == "awaiting_review"
     assert len(local.submitted_workflows) == 1
     assert remote.submitted_workflows == []
+
+
+def _approve_clip_1080p(db: StateDB, episode_id: int, role: str, path: Path) -> int:
+    asset_id = db.create_asset(episode_id, "clip_1080p", role)
+    db.transition_asset(
+        asset_id, expected_status="queued", expected_version=0,
+        status="approved", path=str(path),
+    )
+    return asset_id
+
+
+def _approve_loop(db: StateDB, episode_id: int, path: Path) -> int:
+    asset_id = db.create_asset(episode_id, "loop", "shared")
+    db.transition_asset(
+        asset_id, expected_status="queued", expected_version=0,
+        status="approved", path=str(path),
+    )
+    return asset_id
+
+
+def test_build_loop_concatenates_seven_sleep_and_one_lookup(tmp_path, eight_second_clip_bytes):
+    db = StateDB(tmp_path / "state.sqlite3")
+    episode_id = db.create_episode("chowchow-001", "第一集")
+
+    sleep_path = tmp_path / "sleep.mp4"
+    sleep_path.write_bytes(eight_second_clip_bytes)
+    lookup_path = tmp_path / "lookup.mp4"
+    lookup_path.write_bytes(eight_second_clip_bytes)
+    _approve_clip_1080p(db, episode_id, "sleep", sleep_path)
+    _approve_clip_1080p(db, episode_id, "lookup", lookup_path)
+
+    db.enqueue_task(episode_id, "build_loop")
+
+    workflows_dir = tmp_path / "workflows"
+    _write_workflows(workflows_dir)
+    comfyui = FakeComfyUIClient(output_factory=lambda dest: None)
+    handlers = stages.build_handlers(make_config(tmp_path), comfyui, workflows_dir)
+
+    _run(db, handlers)
+
+    loop_assets = db.assets_for_episode(episode_id, kind="loop")
+    assert len(loop_assets) == 1
+    loop_asset = loop_assets[0]
+    assert loop_asset["status"] == "awaiting_review"
+    assert loop_asset["role"] == "shared"
+    assert Path(loop_asset["path"]).exists()
+    assert loop_asset["duration_seconds"] == pytest.approx(64.0, abs=0.5)
+    assert comfyui.submitted_workflows == [], "build_loop is pure ffmpeg, no ComfyUI call"
+
+
+def test_build_loop_rejects_wrong_length_source_clip(
+    tmp_path, tiny_video_bytes, eight_second_clip_bytes
+):
+    db = StateDB(tmp_path / "state.sqlite3")
+    episode_id = db.create_episode("chowchow-001", "第一集")
+
+    sleep_path = tmp_path / "sleep.mp4"
+    sleep_path.write_bytes(tiny_video_bytes)  # ~1s, not the required 8s
+    lookup_path = tmp_path / "lookup.mp4"
+    lookup_path.write_bytes(eight_second_clip_bytes)
+    _approve_clip_1080p(db, episode_id, "sleep", sleep_path)
+    _approve_clip_1080p(db, episode_id, "lookup", lookup_path)
+
+    task_id = db.enqueue_task(episode_id, "build_loop")
+
+    workflows_dir = tmp_path / "workflows"
+    _write_workflows(workflows_dir)
+    comfyui = FakeComfyUIClient(output_factory=lambda dest: None)
+    handlers = stages.build_handlers(make_config(tmp_path), comfyui, workflows_dir)
+
+    _run(db, handlers)
+
+    assert db.task(task_id)["status"] == "failed"
+    assert "expected 8.0s" in db.task(task_id)["error"]
+
+
+def test_render_final_repeats_loop_to_match_audio_length(
+    tmp_path, tiny_video_bytes, short_audio_path
+):
+    db = StateDB(tmp_path / "state.sqlite3")
+    episode_id = db.create_episode("chowchow-001", "第一集")
+
+    loop_path = tmp_path / "loop.mp4"
+    loop_path.write_bytes(tiny_video_bytes)  # ~1s loop
+    _approve_loop(db, episode_id, loop_path)
+
+    db.enqueue_task(episode_id, "render_final", payload={"audio_path": str(short_audio_path)})
+
+    workflows_dir = tmp_path / "workflows"
+    _write_workflows(workflows_dir)
+    comfyui = FakeComfyUIClient(output_factory=lambda dest: None)
+    handlers = stages.build_handlers(make_config(tmp_path), comfyui, workflows_dir)
+
+    _run(db, handlers)
+
+    final_assets = db.assets_for_episode(episode_id, kind="final")
+    assert len(final_assets) == 1
+    final_asset = final_assets[0]
+    assert final_asset["status"] == "awaiting_review"
+    assert Path(final_asset["path"]).exists()
+    assert final_asset["duration_seconds"] == pytest.approx(5.0, abs=0.5)
+    assert comfyui.submitted_workflows == [], "render_final is pure ffmpeg, no ComfyUI call"
+
+
+def test_render_final_requires_audio_path_in_payload(tmp_path, tiny_video_bytes):
+    db = StateDB(tmp_path / "state.sqlite3")
+    episode_id = db.create_episode("chowchow-001", "第一集")
+    loop_path = tmp_path / "loop.mp4"
+    loop_path.write_bytes(tiny_video_bytes)
+    _approve_loop(db, episode_id, loop_path)
+
+    task_id = db.enqueue_task(episode_id, "render_final")
+
+    workflows_dir = tmp_path / "workflows"
+    _write_workflows(workflows_dir)
+    comfyui = FakeComfyUIClient(output_factory=lambda dest: None)
+    handlers = stages.build_handlers(make_config(tmp_path), comfyui, workflows_dir)
+
+    _run(db, handlers)
+
+    assert db.task(task_id)["status"] == "failed"
+    assert "audio_path" in db.task(task_id)["error"]

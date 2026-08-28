@@ -10,6 +10,7 @@
 .cao/graph-exports/
 .cao/settings.json
 .cao/.env
+.cao/tmp/
 
 # Runtime artifacts may contain model output; keep the directory but ignore files.
 artifacts/*

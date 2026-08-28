@@ -502,22 +502,31 @@ RIFE 後幀數 = (生成幀數 - 1) × 倍率 + 1
 ## 目錄結構
 
 ```text
-comfyui-cafe-loop-generator/
+comfyui-assets/                            # 併入父專案後的位置（原 comfyui-cafe-loop-generator repo）
 ├── workflows/
 │   ├── cafe-keyframe-flux-mps.json      # 步驟 1：FLUX schnell GGUF 關鍵幀（1280×720）
 │   ├── cafe-flf2v-wan22-mps.json        # 步驟 2/3a：WAN2.2 FLF2V 生成，解析度為參數（768×432 試拍／1024×576 正式）
 │   ├── cafe-upscale-1080p-mps.json      # 步驟 3b：純後製 ESRGAN+Lanczos 升頻到 1920×1080，不重新擴散
 │   ├── cafe-flf2v-ltx23-360p-mps.json   # LTX 2.3 對照組（360P）
-│   └── cafe-flf2v-h3-360p-mps.json      # MiniMax H3 對照組（360P，見下方章節；授權不符合本專案商用規則）
+│   ├── cafe-flf2v-h3-360p-mps.json      # MiniMax H3 對照組（360P，見下方章節；授權不符合本專案商用規則）
+│   └── api/                             # 「Save (API Format)」匯出，POST /prompt 只吃這種格式
+│       ├── cafe-keyframe-flux-mps.json
+│       ├── cafe-flf2v-wan22-mps.json
+│       ├── cafe-upscale-1080p-mps.json
+│       ├── cafe-keyframe-flux-chowchow-lora-mps.json       # 松獅犬角色 LoRA 關鍵幀（目前預設路徑）
+│       └── cafe-keyframe-flux-chowchow-composite-mps.json  # 舊版合成貼圖流程（保留作為 fallback）
 ├── scripts/
 │   ├── download-models.sh               # 模型下載器
-│   ├── staged_workflow_server.py        # 圖片→動作試拍二階段人工審核本機控制台
-│   └── validate_project.py              # 不需 GPU 的靜態驗證器
-├── tests/
-├── prompt-library.md                    # 10 組虛構寫實場景
-├── MODEL-LICENSES.md                    # 模型授權與發布紀錄模板
-└── README.md
+│   ├── staged_workflow_server.py        # 圖片→動作試拍二階段人工審核本機控制台（將被 lyria_auto/studio 的 FastAPI 控制台取代）
+│   └── validate_project.py              # 不需 GPU 的靜態驗證器，涵蓋 workflows/ 與 workflows/api/
+├── character-reference/chowchow/        # 松獅犬角色參考包（source/working 已 gitignore，只有 approved/ 進版控）
+├── kaggle_upload/kernel_chowchow_lora/  # Kaggle T4 上訓練 chowchow_mascot LoRA 的腳本
+├── chowchow-prompts.md                  # 松獅犬吉祥物 prompt library（固定身份＋場景庫）
+├── prompt-library.md                    # 10 組虛構寫實場景（泛用咖啡館，非松獅犬專用）
+└── MODEL-LICENSES.md                    # 模型授權與發布紀錄模板
 ```
+
+`tests/`（原本在這個 repo 裡）已經搬到父專案根目錄的 `tests/`，跟 `lyria_auto` 的測試套件合併成一份，用 `pytest` 執行。
 
 先前保留的 NVIDIA GPU 版工作流（`cafe-keyframe-flux.json`、`cafe-flf2v-preview.json`、`cafe-flf2v-loop.json`）與 `video_minimax_h3_t2v.json` 官方範本已在後續整理中移除；目前 repo 裡只有 Apple Silicon MPS 這一套管線。若要租用雲端 GPU，需要另外重建對應工作流。
 

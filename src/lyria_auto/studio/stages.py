@@ -7,15 +7,17 @@ result, and copies the output into this episode's workspace directory --
 see studio-architecture-plan.md Part 三 (取捨 1) for why the templates stay
 in API format and are only patched, never built from scratch here.
 
-build_loop / render_final are not handled here yet (see studio-architecture-
-plan.md 六, Stage 4/5); an episode reaching those tasks with no handler
-registered fails loudly, which is the correct behaviour until that stage
-lands.
+build_loop and render_final are pure ffmpeg (no ComfyUI involved): they
+assemble already-approved clips with the concat demuxer's `-c copy` stream-
+copy path instead of re-encoding, which is what turns a multi-hour final
+render into a few minutes (studio-architecture-plan.md 取捨 3).
 """
 
 from __future__ import annotations
 
 import json
+import math
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -24,9 +26,10 @@ from PIL import Image
 from ..config import AppConfig
 from ..db import StateDB
 from ..errors import GenerationError
-from ..media.timeline import probe_video
+from ..media.audio import probe_audio
+from ..media.timeline import probe_video, verify_render
 from ..providers.comfyui import ComfyUIClient
-from ..utils import ensure_dir, sha256_file
+from ..utils import ensure_dir, run_command, sha256_file
 
 # The Chow Chow LoRA workflow generates the dog natively inside each scene
 # (LoraLoader on a trained chowchow_mascot identity LoRA, node id 20 -- see
@@ -132,6 +135,14 @@ DEFAULT_MOTION_PROMPTS = {"sleep": _SLEEP_PROMPT, "lookup": _LOOKUP_PROMPT}
 
 _MOTION_DIMENSIONS = {"motion_test": (768, 432), "clip": (1024, 576)}
 
+# Every clip_1080p asset is an 8-second segment (see comfyui-assets'
+# validate_project.py TARGET_LOOP_SECONDS); the macro-loop plays sleep 7
+# times and lookup once, in that order, for a 64-second loop that closes
+# seamlessly because every segment both starts and ends on the same shared
+# keyframe pose (chowchow-integration-plan.md).
+SEGMENT_SECONDS = 8.0
+LOOP_SEQUENCE = ["sleep"] * 7 + ["lookup"]
+
 
 def _seed_for(config: AppConfig, asset_id: int) -> int:
     base = int(config.section("project").get("random_seed", 1))
@@ -182,6 +193,45 @@ def _run_stage(
     history_entry = comfyui.wait_for_result(prompt_id)
     comfyui.fetch_output(history_entry, dest)
     return prompt_id
+
+
+def _concat_copy(source_paths: list[str | Path], dest: Path) -> None:
+    """Losslessly concatenate video files with the ffmpeg concat demuxer.
+
+    Every input here is h264-in-mp4 that ComfyUI's own CreateVideo/SaveVideo
+    nodes already encoded the same way (same resolution, codec, and keyframe
+    layout), so a plain stream copy is safe -- no re-encoding, no quality
+    loss, and repeating a 64s loop ~113 times to fill a two-hour render takes
+    minutes instead of the hour-plus a full re-encode would (取捨 3).
+    """
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    partial = dest.with_name(f"{dest.stem}.partial{dest.suffix}")
+    with tempfile.NamedTemporaryFile(
+        "w", suffix=".txt", delete=False, encoding="utf-8"
+    ) as list_file:
+        for source in source_paths:
+            escaped = str(Path(source).resolve()).replace("'", "'\\''")
+            list_file.write(f"file '{escaped}'\n")
+        list_path = Path(list_file.name)
+    try:
+        run_command([
+            "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(list_path),
+            "-c", "copy", str(partial),
+        ])
+    finally:
+        list_path.unlink(missing_ok=True)
+    partial.replace(dest)
+
+
+def _verify_loop_duration(path: Path, expected_seconds: float) -> None:
+    info = probe_video(path)
+    if not any(s.get("codec_type") == "video" for s in info.get("streams", [])):
+        raise GenerationError(f"loop 輸出缺少視訊串流：{path}")
+    actual = float(info.get("format", {}).get("duration") or 0)
+    if abs(actual - expected_seconds) > 0.5:
+        raise GenerationError(
+            f"loop 長度是 {actual:.2f}s，預期 {expected_seconds:.2f}s（{path}）"
+        )
 
 
 def _character_reference_path(config: AppConfig, workflows_dir: Path) -> Path:
@@ -337,9 +387,107 @@ def build_handlers(
             **metadata,
         )
 
+    def build_loop(db: StateDB, task: Any) -> None:
+        """Assemble the 64s macro-loop from the two approved clip_1080p roles.
+
+        Enqueued by app.py's fan-in with no asset_id (there's nothing to
+        transition to 'running' yet -- the asset doesn't exist until this
+        handler creates it), unlike every stage above.
+        """
+        episode_id = task["episode_id"]
+        episode = db.episode(episode_id)
+        clips = {
+            role: _approved_asset(db, episode_id, "clip_1080p", role)
+            for role in ("sleep", "lookup")
+        }
+        for role, clip in clips.items():
+            duration = _video_metadata(Path(clip["path"]))["duration_seconds"]
+            if abs(duration - SEGMENT_SECONDS) > 0.5:
+                raise GenerationError(
+                    f"{role} clip_1080p is {duration:.2f}s, expected {SEGMENT_SECONDS}s "
+                    f"-- can't build an exact {SEGMENT_SECONDS * len(LOOP_SEQUENCE):.0f}s loop"
+                )
+
+        dest = _episode_dir(config, episode["slug"]) / "loop-shared-v0.mp4"
+        _concat_copy([clips[role]["path"] for role in LOOP_SEQUENCE], dest)
+        _verify_loop_duration(dest, SEGMENT_SECONDS * len(LOOP_SEQUENCE))
+
+        metadata = _video_metadata(dest)
+        asset_id = db.create_asset(episode_id, "loop", "shared", status="running")
+        db.transition_asset(
+            asset_id,
+            expected_status="running",
+            expected_version=0,
+            status="awaiting_review",
+            path=str(dest),
+            sha256=sha256_file(dest),
+            **metadata,
+        )
+
+    def render_final(db: StateDB, task: Any) -> None:
+        """Repeat the approved loop to match a music track's length and mux it in.
+
+        The audio to match comes from task['payload_json']['audio_path'] --
+        wiring that up to a specific finished track from the existing
+        tracks/jobs tables is the cross-pipeline integration studio-
+        architecture-plan.md Part 六 leaves for a later stage; this handler's
+        job is just "given a loop and an audio file, render the final video."
+        """
+        episode_id = task["episode_id"]
+        episode = db.episode(episode_id)
+        loop_asset = _approved_asset(db, episode_id, "loop", "shared")
+        loop_duration = _video_metadata(Path(loop_asset["path"]))["duration_seconds"]
+        if loop_duration <= 0:
+            raise GenerationError(f"loop asset 沒有可用的長度：{loop_asset['path']}")
+
+        payload = json.loads(task["payload_json"]) if task["payload_json"] else {}
+        audio_path = payload.get("audio_path")
+        if not audio_path:
+            raise GenerationError(
+                "render_final 需要 payload_json.audio_path（要對齊的最終混音檔案）"
+            )
+        audio_duration = float(probe_audio(audio_path).get("format", {}).get("duration") or 0)
+        if audio_duration <= 0:
+            raise GenerationError(f"無法讀取音訊長度：{audio_path}")
+
+        repeats = max(1, math.ceil(audio_duration / loop_duration))
+        dest = _episode_dir(config, episode["slug"]) / "final-shared-v0.mp4"
+        video_only = dest.with_name(f"{dest.stem}.video-only.mp4")
+        try:
+            _concat_copy([loop_asset["path"]] * repeats, video_only)
+            partial = dest.with_name(f"{dest.stem}.partial{dest.suffix}")
+            audio_bitrate = config.section("video").get("audio_bitrate", "256k")
+            run_command([
+                "ffmpeg", "-y",
+                "-i", str(video_only), "-i", str(audio_path),
+                "-map", "0:v:0", "-map", "1:a:0",
+                "-c:v", "copy", "-c:a", "aac", "-b:a", str(audio_bitrate),
+                "-shortest", "-movflags", "+faststart",
+                str(partial),
+            ])
+            fps = _video_metadata(video_only)["fps"] or 16
+            verify_render(partial, expected_duration=audio_duration, max_error_frames=1, fps=int(fps))
+            partial.replace(dest)
+        finally:
+            video_only.unlink(missing_ok=True)
+
+        metadata = _video_metadata(dest)
+        asset_id = db.create_asset(episode_id, "final", "shared", status="running")
+        db.transition_asset(
+            asset_id,
+            expected_status="running",
+            expected_version=0,
+            status="awaiting_review",
+            path=str(dest),
+            sha256=sha256_file(dest),
+            **metadata,
+        )
+
     return {
         "generate_keyframe": generate_keyframe,
         "generate_motion_test": generate_motion_test,
         "generate_clip": generate_clip,
         "upscale_clip": upscale_clip,
+        "build_loop": build_loop,
+        "render_final": render_final,
     }

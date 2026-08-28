@@ -55,6 +55,23 @@ FORBIDDEN_NONCOMMERCIAL_MODELS = (
     "4x_ultrasharp",
 )
 
+# --- API-format workflows (workflows/api/*.json) ---------------------------
+# ComfyUI's "Save (API Format)" export uses named `inputs` instead of the
+# positional `widgets_values` the checks above rely on. Only the API format
+# is ever POSTed to /prompt (取捨 1 in studio-architecture-plan.md), so these
+# files are what actually runs -- the UI-format checks above only protect
+# the human-editable graph you'd open back up in the ComfyUI GUI.
+API_KEYFRAME_WORKFLOW_NAME = "cafe-keyframe-flux-mps.json"
+API_CHOWCHOW_LORA_KEYFRAME_NAME = "cafe-keyframe-flux-chowchow-lora-mps.json"
+API_CHOWCHOW_COMPOSITE_KEYFRAME_NAME = "cafe-keyframe-flux-chowchow-composite-mps.json"
+API_GENERATION_WORKFLOW_NAME = "cafe-flf2v-wan22-mps.json"
+API_UPSCALE_WORKFLOW_NAME = "cafe-upscale-1080p-mps.json"
+EXPECTED_CHOWCHOW_LORA_MODEL = "chowchow-identity-v1.safetensors"
+# stages.py's generate_keyframe() special-cases `if "10" in workflow` to patch
+# a character-cutout image into the composite path only; if this id drifts,
+# that runtime patch silently stops firing instead of erroring.
+COMPOSITE_CHARACTER_CUTOUT_NODE_ID = "10"
+
 
 def _node_by_type(workflow: dict[str, Any], node_type: str) -> list[dict[str, Any]]:
     return [node for node in workflow.get("nodes", []) if node.get("type") == node_type]
@@ -341,6 +358,261 @@ def _check_mps_upscale(workflow: dict[str, Any], name: str) -> list[str]:
     return errors
 
 
+def _api_nodes_by_class(workflow: dict[str, Any], class_type: str) -> list[dict[str, Any]]:
+    return [
+        node for node in workflow.values()
+        if isinstance(node, dict) and node.get("class_type") == class_type
+    ]
+
+
+def _check_api_json(path: Path) -> tuple[dict[str, Any] | None, list[str]]:
+    errors: list[str] = []
+    try:
+        workflow = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return None, [f"{path.name}: invalid JSON ({exc})"]
+
+    if not isinstance(workflow, dict):
+        return None, [f"{path.name}: workflow root must be an object"]
+
+    for node_id, node in workflow.items():
+        if not isinstance(node, dict) or "class_type" not in node or "inputs" not in node:
+            errors.append(
+                f"{path.name}: node {node_id!r} missing class_type/inputs "
+                f"(not a 'Save (API Format)' export?)"
+            )
+
+    return workflow, errors
+
+
+def _check_api_chowchow_lora_keyframe(workflow: dict[str, Any], name: str) -> list[str]:
+    errors: list[str] = []
+
+    loras = _api_nodes_by_class(workflow, "LoraLoader")
+    if len(loras) != 1:
+        errors.append(f"{name}: expected exactly one LoraLoader node")
+    else:
+        lora_name = loras[0]["inputs"].get("lora_name")
+        if lora_name != EXPECTED_CHOWCHOW_LORA_MODEL:
+            errors.append(
+                f"{name}: lora_name must be {EXPECTED_CHOWCHOW_LORA_MODEL} (found {lora_name})"
+            )
+
+    samplers = _api_nodes_by_class(workflow, "KSampler")
+    if len(samplers) != 1:
+        errors.append(f"{name}: expected exactly one KSampler node")
+    else:
+        inputs = samplers[0]["inputs"]
+        if inputs.get("steps") != 4:
+            errors.append(f"{name}: steps must be 4 (found {inputs.get('steps')})")
+        if inputs.get("cfg") != 1:
+            errors.append(f"{name}: CFG must be 1 (found {inputs.get('cfg')})")
+
+    latents = _api_nodes_by_class(workflow, "EmptyLatentImage")
+    if len(latents) != 1:
+        errors.append(f"{name}: expected exactly one EmptyLatentImage node")
+    elif latents[0]["inputs"].get("batch_size") != EXPECTED_KEYFRAME_BATCH_SIZE:
+        errors.append(
+            f"{name}: keyframe batch size must be {EXPECTED_KEYFRAME_BATCH_SIZE} "
+            f"(found {latents[0]['inputs'].get('batch_size')})"
+        )
+
+    return errors
+
+
+def _check_api_chowchow_composite_keyframe(workflow: dict[str, Any], name: str) -> list[str]:
+    errors: list[str] = []
+    node = workflow.get(COMPOSITE_CHARACTER_CUTOUT_NODE_ID)
+    if not isinstance(node, dict) or node.get("class_type") != "LoadImage":
+        errors.append(
+            f"{name}: node {COMPOSITE_CHARACTER_CUTOUT_NODE_ID!r} must be a LoadImage node "
+            f"-- stages.py's generate_keyframe() patches the character cutout image onto "
+            f"this exact node id"
+        )
+    return errors
+
+
+def _check_api_generation_loop_arithmetic(workflow: dict[str, Any], name: str) -> list[str]:
+    """API-format sibling of _check_mps_generation_loop_arithmetic (named
+    inputs instead of positional widgets_values, same loop-length invariant).
+    """
+    errors: list[str] = []
+
+    samplers = _api_nodes_by_class(workflow, "KSamplerAdvanced")
+    if len(samplers) != 2:
+        errors.append(f"{name}: expected two KSamplerAdvanced nodes (high/low noise)")
+    for sampler in samplers:
+        inputs = sampler["inputs"]
+        if inputs.get("steps") != EXPECTED_MPS_GENERATION_STEPS:
+            errors.append(
+                f"{name}: Lightning LoRA requires steps={EXPECTED_MPS_GENERATION_STEPS} "
+                f"(found {inputs.get('steps')})"
+            )
+        if inputs.get("cfg") != EXPECTED_MPS_GENERATION_CFG:
+            errors.append(
+                f"{name}: Lightning LoRA requires CFG={EXPECTED_MPS_GENERATION_CFG} "
+                f"(found {inputs.get('cfg')})"
+            )
+
+    loras = _api_nodes_by_class(workflow, "LoraLoaderModelOnly")
+    if len(loras) != 2:
+        errors.append(f"{name}: expected two LoraLoaderModelOnly nodes (high/low noise)")
+
+    video_nodes = _api_nodes_by_class(workflow, "WanFirstLastFrameToVideo")
+    interp_nodes = _api_nodes_by_class(workflow, "FrameInterpolate")
+    trim_nodes = _api_nodes_by_class(workflow, "ImageFromBatch")
+    create_nodes = _api_nodes_by_class(workflow, "CreateVideo")
+
+    if not (video_nodes and interp_nodes and trim_nodes and create_nodes):
+        return errors + [(
+            f"{name}: pipeline must contain FLF2V, FrameInterpolate, "
+            f"ImageFromBatch and CreateVideo nodes"
+        )]
+
+    generated = video_nodes[0]["inputs"].get("length")
+    multiplier = interp_nodes[0]["inputs"].get("multiplier")
+    kept = trim_nodes[0]["inputs"].get("length")
+    fps = create_nodes[0]["inputs"].get("fps")
+
+    if not all(isinstance(v, (int, float)) for v in (generated, multiplier, kept, fps)):
+        return errors + [f"{name}: could not read frame/fps inputs for the loop-length check"]
+
+    interpolated = (generated - 1) * multiplier + 1
+    if kept > interpolated:
+        errors.append(
+            f"{name}: ImageFromBatch keeps {kept} frames but only {interpolated} exist "
+            f"after {multiplier}x interpolation of {generated} frames"
+        )
+    if kept != interpolated - 1:
+        errors.append(
+            f"{name}: keep {interpolated - 1} frames, not {kept} — the last interpolated "
+            f"frame duplicates the first and stutters at the loop point"
+        )
+    duration = kept / fps if fps else 0
+    if abs(duration - TARGET_LOOP_SECONDS) > 1e-6:
+        errors.append(
+            f"{name}: loop is {duration:.3f}s, expected {TARGET_LOOP_SECONDS}s "
+            f"({kept} frames at {fps} fps)"
+        )
+
+    return errors
+
+
+def _check_api_upscale(workflow: dict[str, Any], name: str) -> list[str]:
+    errors: list[str] = []
+
+    for class_type in (
+        "LoadVideo", "GetVideoComponents", "UpscaleModelLoader",
+        "ImageUpscaleWithModel", "ImageScale",
+    ):
+        if len(_api_nodes_by_class(workflow, class_type)) != 1:
+            errors.append(f"{name}: expected exactly one {class_type} node")
+
+    loaders = _api_nodes_by_class(workflow, "UpscaleModelLoader")
+    if loaders:
+        model = loaders[0]["inputs"].get("model_name")
+        if not isinstance(model, str) or model.lower() not in EXPECTED_MPS_UPSCALE_MODELS:
+            errors.append(
+                f"{name}: upscale model must be one of {sorted(EXPECTED_MPS_UPSCALE_MODELS)} "
+                f"(found {model})"
+            )
+
+    scale_nodes = _api_nodes_by_class(workflow, "ImageScale")
+    if scale_nodes:
+        inputs = scale_nodes[0]["inputs"]
+        size = (inputs.get("width"), inputs.get("height"))
+        if size != TARGET_OUTPUT_SIZE:
+            errors.append(
+                f"{name}: final resize must be {TARGET_OUTPUT_SIZE[0]}x{TARGET_OUTPUT_SIZE[1]} "
+                f"(found {size[0]}x{size[1]})"
+            )
+
+    create_nodes = _api_nodes_by_class(workflow, "CreateVideo")
+    if create_nodes and create_nodes[0]["inputs"].get("fps") != TARGET_OUTPUT_FPS:
+        errors.append(
+            f"{name}: output fps must stay {TARGET_OUTPUT_FPS} "
+            f"(found {create_nodes[0]['inputs'].get('fps')})"
+        )
+
+    return errors
+
+
+def _check_ui_api_drift(
+    ui_workflow: dict[str, Any], api_workflow: dict[str, Any], ui_name: str, api_name: str
+) -> list[str]:
+    """Compare hand-picked critical parameters between the UI-format (Save)
+    and API-format (Save API Format) exports of the same workflow.
+
+    Both formats round-trip the same ComfyUI graph through unrelated export
+    code paths with no automatic sync, so a value edited in one (e.g.
+    bumping cfg in the UI and re-saving) can silently drift from the other --
+    and only the API file is what actually executes (取捨 1 in
+    studio-architecture-plan.md).
+    """
+    errors: list[str] = []
+
+    def _compare(label: str, ui_value: Any, api_value: Any) -> None:
+        if ui_value is None or api_value is None:
+            return
+        if ui_value != api_value:
+            errors.append(
+                f"{api_name}: {label} drifted from {ui_name} "
+                f"(ui={ui_value!r}, api={api_value!r})"
+            )
+
+    ui_unet = _node_by_type(ui_workflow, "UnetLoaderGGUF")
+    api_unet = _api_nodes_by_class(api_workflow, "UnetLoaderGGUF")
+    if ui_unet and api_unet:
+        _compare("UnetLoaderGGUF checkpoint", _widget(ui_unet[0], 0), api_unet[0]["inputs"].get("unet_name"))
+
+    ui_ksampler = _node_by_type(ui_workflow, "KSampler")
+    api_ksampler = _api_nodes_by_class(api_workflow, "KSampler")
+    if ui_ksampler and api_ksampler:
+        _compare("KSampler steps", _widget(ui_ksampler[0], 2), api_ksampler[0]["inputs"].get("steps"))
+        _compare("KSampler cfg", _widget(ui_ksampler[0], 3), api_ksampler[0]["inputs"].get("cfg"))
+
+    ui_latent = _node_by_type(ui_workflow, "EmptyLatentImage")
+    api_latent = _api_nodes_by_class(api_workflow, "EmptyLatentImage")
+    if ui_latent and api_latent:
+        _compare("EmptyLatentImage batch_size", _widget(ui_latent[0], 2), api_latent[0]["inputs"].get("batch_size"))
+
+    ui_video = _node_by_type(ui_workflow, "WanFirstLastFrameToVideo")
+    api_video = _api_nodes_by_class(api_workflow, "WanFirstLastFrameToVideo")
+    if ui_video and api_video:
+        _compare("WanFirstLastFrameToVideo frame count", _widget(ui_video[0], 2), api_video[0]["inputs"].get("length"))
+
+    ui_interp = _node_by_type(ui_workflow, "FrameInterpolate")
+    api_interp = _api_nodes_by_class(api_workflow, "FrameInterpolate")
+    if ui_interp and api_interp:
+        _compare("FrameInterpolate multiplier", _widget(ui_interp[0], 0), api_interp[0]["inputs"].get("multiplier"))
+
+    ui_trim = _node_by_type(ui_workflow, "ImageFromBatch")
+    api_trim = _api_nodes_by_class(api_workflow, "ImageFromBatch")
+    if ui_trim and api_trim:
+        _compare("ImageFromBatch kept frames", _widget(ui_trim[0], 1), api_trim[0]["inputs"].get("length"))
+
+    ui_create = _node_by_type(ui_workflow, "CreateVideo")
+    api_create = _api_nodes_by_class(api_workflow, "CreateVideo")
+    if ui_create and api_create:
+        _compare("CreateVideo fps", _widget(ui_create[0], 0), api_create[0]["inputs"].get("fps"))
+
+    ui_upscale_loader = _node_by_type(ui_workflow, "UpscaleModelLoader")
+    api_upscale_loader = _api_nodes_by_class(api_workflow, "UpscaleModelLoader")
+    if ui_upscale_loader and api_upscale_loader:
+        _compare(
+            "UpscaleModelLoader model", _widget(ui_upscale_loader[0], 0),
+            api_upscale_loader[0]["inputs"].get("model_name"),
+        )
+
+    ui_scale = _node_by_type(ui_workflow, "ImageScale")
+    api_scale = _api_nodes_by_class(api_workflow, "ImageScale")
+    if ui_scale and api_scale:
+        _compare("ImageScale width", _widget(ui_scale[0], 1), api_scale[0]["inputs"].get("width"))
+        _compare("ImageScale height", _widget(ui_scale[0], 2), api_scale[0]["inputs"].get("height"))
+
+    return errors
+
+
 def validate_project(root: Path) -> list[str]:
     """Return human-readable validation errors for a project root."""
 
@@ -389,9 +661,84 @@ def validate_project(root: Path) -> list[str]:
                         f"{MPS_UPSCALE_WORKFLOW_NAME}: missing expected model {model}"
                     )
 
+    # --- API-format workflows (workflows/api/*.json) ------------------------
+    # Only these files are ever POSTed to ComfyUI's /prompt endpoint; the
+    # UI-format checks above protect the human-editable graph, these protect
+    # what actually runs.
+    api_dir = root / "workflows" / "api"
+
+    api_keyframe_path = api_dir / API_KEYFRAME_WORKFLOW_NAME
+    if api_keyframe_path.is_file():
+        api_keyframe_workflow, api_keyframe_errors = _check_api_json(api_keyframe_path)
+        errors.extend(api_keyframe_errors)
+        if api_keyframe_workflow is not None and mps_path.is_file() and mps_workflow is not None:
+            errors.extend(
+                _check_ui_api_drift(
+                    mps_workflow, api_keyframe_workflow,
+                    OPTIONAL_MPS_WORKFLOW_NAME, API_KEYFRAME_WORKFLOW_NAME,
+                )
+            )
+
+    api_chowchow_lora_path = api_dir / API_CHOWCHOW_LORA_KEYFRAME_NAME
+    if api_chowchow_lora_path.is_file():
+        chowchow_lora_workflow, chowchow_lora_errors = _check_api_json(api_chowchow_lora_path)
+        errors.extend(chowchow_lora_errors)
+        if chowchow_lora_workflow is not None:
+            if "flux1-dev" in json.dumps(chowchow_lora_workflow).lower():
+                errors.append(f"{API_CHOWCHOW_LORA_KEYFRAME_NAME}: forbidden flux1-dev reference")
+            errors.extend(
+                _check_api_chowchow_lora_keyframe(chowchow_lora_workflow, API_CHOWCHOW_LORA_KEYFRAME_NAME)
+            )
+
+    api_chowchow_composite_path = api_dir / API_CHOWCHOW_COMPOSITE_KEYFRAME_NAME
+    if api_chowchow_composite_path.is_file():
+        chowchow_composite_workflow, chowchow_composite_errors = _check_api_json(
+            api_chowchow_composite_path
+        )
+        errors.extend(chowchow_composite_errors)
+        if chowchow_composite_workflow is not None:
+            errors.extend(
+                _check_api_chowchow_composite_keyframe(
+                    chowchow_composite_workflow, API_CHOWCHOW_COMPOSITE_KEYFRAME_NAME
+                )
+            )
+
+    api_generation_path = api_dir / API_GENERATION_WORKFLOW_NAME
+    if api_generation_path.is_file():
+        api_generation_workflow, api_generation_errors = _check_api_json(api_generation_path)
+        errors.extend(api_generation_errors)
+        if api_generation_workflow is not None:
+            errors.extend(
+                _check_api_generation_loop_arithmetic(api_generation_workflow, API_GENERATION_WORKFLOW_NAME)
+            )
+            if mps_generation_path.is_file() and generation_workflow is not None:
+                errors.extend(
+                    _check_ui_api_drift(
+                        generation_workflow, api_generation_workflow,
+                        MPS_GENERATION_WORKFLOW_NAME, API_GENERATION_WORKFLOW_NAME,
+                    )
+                )
+
+    api_upscale_path = api_dir / API_UPSCALE_WORKFLOW_NAME
+    if api_upscale_path.is_file():
+        api_upscale_workflow, api_upscale_errors = _check_api_json(api_upscale_path)
+        errors.extend(api_upscale_errors)
+        if api_upscale_workflow is not None:
+            errors.extend(_check_api_upscale(api_upscale_workflow, API_UPSCALE_WORKFLOW_NAME))
+            if mps_upscale_path.is_file() and upscale_workflow is not None:
+                errors.extend(
+                    _check_ui_api_drift(
+                        upscale_workflow, api_upscale_workflow,
+                        MPS_UPSCALE_WORKFLOW_NAME, API_UPSCALE_WORKFLOW_NAME,
+                    )
+                )
+
     # Sweep every workflow, not just the ones enumerated above: a non-commercial
     # upscaler dropped into any workflow taints the output it produces.
-    for path in sorted((root / "workflows").glob("*.json")):
+    workflow_globs = list((root / "workflows").glob("*.json"))
+    if api_dir.is_dir():
+        workflow_globs += list(api_dir.glob("*.json"))
+    for path in sorted(workflow_globs):
         text = path.read_text(encoding="utf-8").lower()
         for forbidden in FORBIDDEN_NONCOMMERCIAL_MODELS:
             if forbidden in text:

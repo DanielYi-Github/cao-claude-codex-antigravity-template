@@ -151,11 +151,17 @@ def patch_ai_toolkit_for_t4():
     newer flux2/wan21/etc. model classes). Patch: move the transformer to
     CPU right before T5 loads, move it back once T5 is quantized down.
     """
+    _patch_stable_diffusion_model()
+    _patch_base_sd_train_process()
+
+
+def _patch_stable_diffusion_model():
     path = os.path.join(AI_TOOLKIT_DIR, "toolkit", "stable_diffusion_model.py")
-    src = open(path).read()
+    with open(path) as f:
+        src = f.read()
 
     if "chowchow patch" in src:
-        print("patch_ai_toolkit_for_t4: already patched (AI_TOOLKIT_DIR was reused across runs), skipping")
+        print("patch_ai_toolkit_for_t4: stable_diffusion_model.py already patched, skipping")
         return
 
     anchor_a = (
@@ -305,23 +311,28 @@ def patch_ai_toolkit_for_t4():
     assert anchor_c in src, "patch_ai_toolkit_for_t4: anchor_c not found, upstream file changed"
     src = src.replace(anchor_c, replacement_c, 1)
 
-    open(path, "w").write(src)
+    with open(path, "w") as f:
+        f.write(src)
     print("patched toolkit/stable_diffusion_model.py for T4 (transformer<->CPU swap around T5 load)")
 
-    # v18 (FLUX.1-dev, no assistant adapter) still OOMed ~24s after the
-    # is_flux block finished at a comfortable 9.56GB, with the exact same
-    # numbers as v17 (schnell+adapter) -- proving the adapter fusion was
-    # never the cause. jobs/process/BaseSDTrainProcess.py calls
-    # `unet.to(self.device_torch, dtype=dtype)` right after load_model()
-    # returns, explicitly casting the already-quantized transformer to
-    # bf16 -- if the quantized tensor type doesn't ignore dtype= casts,
-    # this dequantizes a frozen ~12B-param model back to full precision
-    # (~24GB), which is a plausible match for the spike. Patch: skip the
-    # dtype= kwarg (device-only move) when the model is quantized, plus a
-    # memory print right after so this either confirms the theory or rules
-    # it out with hard numbers instead of another guess.
+
+def _patch_base_sd_train_process():
+    """v18 (FLUX.1-dev, no assistant adapter) still OOMed ~24s after the
+    is_flux block finished at a comfortable 9.56GB, with the exact same
+    numbers as v17 (schnell+adapter) -- proving the adapter fusion was
+    never the cause. jobs/process/BaseSDTrainProcess.py calls
+    `unet.to(self.device_torch, dtype=dtype)` right after load_model()
+    returns, explicitly casting the already-quantized transformer to
+    bf16 -- if the quantized tensor type doesn't ignore dtype= casts,
+    this dequantizes a frozen ~12B-param model back to full precision
+    (~24GB), which is a plausible match for the spike. Patch: skip the
+    dtype= kwarg (device-only move) when the model is quantized, plus a
+    memory print right after so this either confirms the theory or rules
+    it out with hard numbers instead of another guess.
+    """
     path2 = os.path.join(AI_TOOLKIT_DIR, "jobs", "process", "BaseSDTrainProcess.py")
-    src2 = open(path2).read()
+    with open(path2) as f:
+        src2 = f.read()
     if "chowchow patch" in src2:
         print("patch_ai_toolkit_for_t4: BaseSDTrainProcess.py already patched, skipping")
         return
@@ -393,7 +404,8 @@ def patch_ai_toolkit_for_t4():
     assert anchor_f in src2, "patch_ai_toolkit_for_t4: anchor_f not found, upstream file changed"
     src2 = src2.replace(anchor_f, replacement_f, 1)
 
-    open(path2, "w").write(src2)
+    with open(path2, "w") as f:
+        f.write(src2)
     print("patched jobs/process/BaseSDTrainProcess.py (skip dtype= cast on quantized unet.to)")
 
 
@@ -404,7 +416,8 @@ def get_hf_token():
         f"找不到 {token_path}。請確認 kernel-metadata.json 的 dataset_sources "
         "裡有 danielyiyi/chowchow-lora-hf-token，且該 dataset 裡有 hf_token.txt。"
     )
-    token = open(token_path).read().strip()
+    with open(token_path) as f:
+        token = f.read().strip()
     assert token, f"{token_path} 是空的。"
     return token
 
