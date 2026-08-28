@@ -28,9 +28,10 @@ lead = run_step(
 
 Read {task_file} and {project_dir / 'AGENTS.md'}.
 Create the initial task specification at {artifact_dir / 'spec.md'}.
-Implement only a small, reviewable change based on the demo task, preferably a
-minimal project-health dashboard or a clearly documented implementation plan
-if this repository has no UI runtime yet. Keep all data synthetic and local.
+Implement only a small, reviewable change based on the task brief. If the
+repository does not yet have the runtime the task needs (e.g. no frontend
+framework installed), return a clearly documented implementation plan instead
+of guessing a stack. Keep all data synthetic and local.
 Run ./scripts/verify-local.sh if possible. Return a concise summary, changed
 paths, and the commit or working-tree state. Do not access secrets.""",
     step_id="lead-implementation",
@@ -42,7 +43,7 @@ ui = run_step(
     f"""You are the UI and data specialist.
 
 Read {task_file}, {project_dir / 'AGENTS.md'}, and the lead result below.
-Inspect the local fixture {project_dir / 'src/data/project_health.json'} and
+Inspect any local synthetic data fixtures referenced by the task brief and
 {project_dir / 'docs/data-contract.md'}.
 
 Produce UI/data guidance in your response using the required headings from

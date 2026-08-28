@@ -123,6 +123,37 @@ cao workflow result cao-three-agent-demo --json
 CAO_RUN_ID=three-agent-demo-2 ./scripts/run-demo.sh
 ```
 
+## 用這個骨架開始下一個專案
+
+內建的 Project Health Dashboard demo 已經清空：`docs/demo-task.md`、
+`docs/data-contract.md` 現在是空白模板，`src/`、`tests/` 底下只剩下說明用途
+的 `README.md`。要用這份骨架做新專案時，啟動流程跟上面「最短試跑流程」完全
+一樣，差別只在你餵給 lead 的任務內容：
+
+1. 複製整個資料夾（或直接把這個 repo 當成新專案的起點），`bootstrap.sh`、
+   三個 provider 登入、`start-server.sh` 這幾步不變。
+2. 把這次真正要做的任務寫進 `docs/demo-task.md`，照檔案裡的模板填目標、驗收
+   標準、限制、驗證指令、預期的 handoff。任務牽涉共用資料格式時順便填
+   `docs/data-contract.md`；用不到就留白——`verify-local.sh` 只檢查檔案存
+   在，不檢查內容。
+3. 專案需要自己的 build／lint／test 指令時，加進
+   `scripts/verify-local.sh` 裡 `# Add your project's own build/lint/type-check
+   commands here` 那行下面；預設只跑 `unittest discover` 和必要檔案檢查。
+4. 用 `./scripts/launch-lead.sh "……"` 互動啟動 lead，或執行
+   `./scripts/run-demo.sh` 走一次完整的 Claude → Antigravity → Codex →
+   Claude 流程——`.cao/workflows/three_agent_demo.py` 會照
+   `docs/demo-task.md` 當下的內容走，不再寫死 dashboard 相關路徑。
+5. `AGENTS.md`、`CLAUDE.md`、`.cao/profiles/`、`.cao/skills/` 是可以直接沿
+   用的協作骨架，通常不需要修改；每個新專案真正要換的只有
+   `docs/demo-task.md`、`docs/data-contract.md`，以及你自己在 `src/`／
+   `tests/` 底下寫的程式碼。
+
+如果想把任務檔換成更直覺的檔名（例如 `docs/task.md`），需要一併修改
+`AGENTS.md`、`CLAUDE.md`、`docs/first-run.md`、`scripts/launch-lead.sh` 的
+預設提示、`scripts/verify-local.sh` 的必要檔案清單，以及
+`.cao/workflows/three_agent_demo.py` 裡的 `task_file` 路徑——這些是目前唯一
+寫死引用 `docs/demo-task.md` 這個檔名的地方。
+
 ## 專案規則與檔案交接
 
 `AGENTS.md` 是本範本的唯一 canonical 規則來源。Claude Code 的 `CLAUDE.md` 會匯入它；`GEMINI.md` 只保留給舊版 Gemini 相容工具作為提示，不應分別維護第二套規則。現行 Antigravity／Codex 相容流程以 `AGENTS.md` 為主。

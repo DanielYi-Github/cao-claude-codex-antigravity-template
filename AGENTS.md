@@ -54,7 +54,7 @@ Artifacts and paths
 Open questions
 ```
 
-Do not copy production data into the repository. Redact personal data from screenshots and examples. Prefer synthetic fixtures for the demo project.
+Do not copy production data into the repository. Redact personal data from screenshots and examples. Prefer synthetic fixtures over production data.
 
 ## Lead completion checklist
 

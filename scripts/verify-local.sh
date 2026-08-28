@@ -4,11 +4,18 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-printf '[verify] Python fixture check\n'
-python3 src/health_check.py
+# Add your project's own build/lint/type-check commands here as they exist.
 
 printf '[verify] unit tests\n'
+set +e
 PYTHONPATH="$ROOT_DIR" python3 -m unittest discover -s tests -p 'test_*.py' -v
+test_status=$?
+set -e
+# Python 3.12+ exits 5 for "no tests were collected" (e.g. a fresh skeleton
+# with no test_*.py yet); treat that as informational, not a failure.
+if [ "$test_status" -ne 0 ] && [ "$test_status" -ne 5 ]; then
+  exit "$test_status"
+fi
 
 printf '[verify] Git whitespace check\n'
 if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then

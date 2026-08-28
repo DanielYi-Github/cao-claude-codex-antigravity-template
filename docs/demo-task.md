@@ -1,19 +1,31 @@
-# Demo Task: Project Health Dashboard
+# Task Brief
 
-Build a small project-health dashboard using the files in this repository. The dashboard should show a project name, a health score, recent checks, and an empty/loading/error state. Use the local synthetic data in `src/data/project_health.json`; do not connect to a real database.
+Replace this file's content with the brief for your current task before you
+launch the lead. This is what `AGENTS.md` calls "the human-readable task
+brief" — the Claude lead, Codex reviewer, and Antigravity UI/data worker all
+read this file first.
 
-## Acceptance criteria
+## What to include
 
-1. The data shape is documented in `docs/data-contract.md`.
-2. The UI must be readable on narrow and wide screens.
-3. The UI must expose meaningful headings and labels for keyboard and screen-reader users.
-4. The loading, empty, and error states must be represented in the component or prototype notes.
-5. The project must not read credentials, call production services, or write outside the repository.
-6. A reviewer must be able to run the local checks with `./scripts/verify-local.sh`.
+1. One or two sentences describing what you want built, fixed, or
+   investigated.
+2. Acceptance criteria — a numbered list of concrete, checkable conditions.
+3. Constraints — what must NOT happen (e.g. no production data, no writes
+   outside the repo, no new dependencies without approval).
+4. The command a reviewer should run to verify the result, e.g.
+   `./scripts/verify-local.sh`.
 
 ## Expected handoffs
 
-Claude Code should create `artifacts/spec.md` and implement the scoped changes. Antigravity should produce `artifacts/ui-notes.md` and `artifacts/schema.md` based on this task and the local JSON fixture. Codex should review the implementation or current diff and return `artifacts/review.md` if its profile permits writing; otherwise return the structured review inline for Claude to record.
+State explicitly which artifact each role should produce, for example:
+
+- Claude Code creates `artifacts/spec.md` (for anything larger than a
+  one-file change) and implements the scoped change.
+- Antigravity produces `artifacts/ui-notes.md` and/or `artifacts/schema.md`
+  if the task has a UI or data component.
+- Codex reviews the implementation or current diff and returns
+  `artifacts/review.md`, or an inline structured review per `AGENTS.md` if
+  its profile does not permit writing files.
 
 ## Suggested first command
 
