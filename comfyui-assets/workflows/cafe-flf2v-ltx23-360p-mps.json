@@ -1,0 +1,1153 @@
+{
+  "id": "ec20f84e-22ad-4d56-bd70-9dd96c7d3c50",
+  "revision": 0,
+  "last_node_id": 20,
+  "last_link_id": 27,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "UnetLoaderGGUF",
+      "pos": [
+        80,
+        80
+      ],
+      "size": [
+        470,
+        60
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            15
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "UnetLoaderGGUF"
+      },
+      "widgets_values": [
+        "ltx-2.3-22b-distilled-1.1-Q3_K_S.gguf"
+      ],
+      "_meta": {
+        "title": "1. LTX-2.3 22B distilled diffusion model, GGUF Q3_K_S — already a distilled checkpoint, no separate LoRA needed"
+      }
+    },
+    {
+      "id": 2,
+      "type": "DualCLIPLoaderGGUF",
+      "pos": [
+        80,
+        180
+      ],
+      "size": [
+        470,
+        110
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "CLIP",
+          "type": "CLIP",
+          "links": [
+            3,
+            4
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "DualCLIPLoaderGGUF"
+      },
+      "widgets_values": [
+        "gemma-3-12b-it-qat-UD-Q4_K_XL.gguf",
+        "ltx-2.3-22b-distilled_embeddings_connectors.safetensors",
+        "ltxv"
+      ],
+      "_meta": {
+        "title": "2. Gemma-3-12B text encoder + LTX embeddings connector (local, GGUF-aware dual loader — official templates use a cloud Gemma API node instead, not used here)"
+      }
+    },
+    {
+      "id": 3,
+      "type": "VAELoaderKJ",
+      "pos": [
+        80,
+        330
+      ],
+      "size": [
+        470,
+        90
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "VAE",
+          "type": "VAE",
+          "links": [
+            7,
+            12,
+            24
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VAELoaderKJ"
+      },
+      "widgets_values": [
+        "ltx-2.3-22b-distilled_video_vae.safetensors",
+        "main_device",
+        "fp32"
+      ],
+      "_meta": {
+        "title": "3. LTX video VAE (KJNodes loader — fp32 avoids MPS precision issues on this VAE)"
+      }
+    },
+    {
+      "id": 4,
+      "type": "CLIPTextEncode",
+      "pos": [
+        80,
+        460
+      ],
+      "size": [
+        470,
+        200
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 3
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CONDITIONING",
+          "type": "CONDITIONING",
+          "links": [
+            1
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "CLIPTextEncode"
+      },
+      "widgets_values": [
+        "A fictional small cafe with a warm wood interior and a large side window, late afternoon sunlight resting softly across the table, dust particles drifting slowly in a narrow sunbeam, steam curling gently from a fresh coffee, a potted plant leaf swaying slightly, realistic shadows and natural lens exposure, true-to-life live-action documentary photography, physically plausible materials and motion, locked-off camera, stable composition, only subtle ambient motion, smooth continuous loop returning to the same composition, no camera movement, no scene change, no new objects, no logos, no readable text, no recognizable location, no identifiable people"
+      ],
+      "_meta": {
+        "title": "4. Positive prompt"
+      }
+    },
+    {
+      "id": 5,
+      "type": "CLIPTextEncode",
+      "pos": [
+        80,
+        700
+      ],
+      "size": [
+        470,
+        200
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 4
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CONDITIONING",
+          "type": "CONDITIONING",
+          "links": [
+            2
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "CLIPTextEncode"
+      },
+      "widgets_values": [
+        "camera shake, zoom, pan, fast camera movement, scene transition, flicker, strobing, frozen motion, static motion, object morphing, changing layout, new objects, disappearing objects, warped geometry, distorted cup, duplicate objects, blurry, low quality, worst quality, oversaturated, overexposed, underexposed, cropped, out of frame"
+      ],
+      "_meta": {
+        "title": "5. Negative prompt"
+      }
+    },
+    {
+      "id": 6,
+      "type": "LoadImage",
+      "pos": [
+        80,
+        940
+      ],
+      "size": [
+        300,
+        322
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            9
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "links": [],
+          "slot_index": 1
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadImage"
+      },
+      "widgets_values": [
+        "inspect_1367338573.png",
+        "image"
+      ],
+      "_meta": {
+        "title": "6. First frame — your keyframe"
+      }
+    },
+    {
+      "id": 7,
+      "type": "LoadImage",
+      "pos": [
+        80,
+        1290
+      ],
+      "size": [
+        300,
+        322
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            14
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "links": [],
+          "slot_index": 1
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadImage"
+      },
+      "widgets_values": [
+        "inspect_1367338573.png",
+        "image"
+      ],
+      "_meta": {
+        "title": "7. Last frame — MUST be the identical file for a seamless loop"
+      }
+    },
+    {
+      "id": 8,
+      "type": "EmptyLTXVLatentVideo",
+      "pos": [
+        600,
+        80
+      ],
+      "size": [
+        330,
+        130
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "LATENT",
+          "type": "LATENT",
+          "links": [
+            8
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "EmptyLTXVLatentVideo"
+      },
+      "widgets_values": [
+        608,
+        352,
+        193,
+        1
+      ],
+      "_meta": {
+        "title": "8. Empty latent — 608x352 (360p), 193 frames (LTX requires length = 8k+1; the extra frame is dropped after decode, see node 15)"
+      }
+    },
+    {
+      "id": 9,
+      "type": "LTXVConditioning",
+      "pos": [
+        600,
+        250
+      ],
+      "size": [
+        330,
+        90
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "positive",
+          "type": "CONDITIONING",
+          "link": 1
+        },
+        {
+          "name": "negative",
+          "type": "CONDITIONING",
+          "link": 2
+        }
+      ],
+      "outputs": [
+        {
+          "name": "positive",
+          "type": "CONDITIONING",
+          "links": [
+            5
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "negative",
+          "type": "CONDITIONING",
+          "links": [
+            6
+          ],
+          "slot_index": 1
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LTXVConditioning"
+      },
+      "widgets_values": [
+        24.0
+      ],
+      "_meta": {
+        "title": "9. Attach frame_rate to conditioning (core LTXV node)"
+      }
+    },
+    {
+      "id": 10,
+      "type": "LTXVAddGuide",
+      "pos": [
+        600,
+        380
+      ],
+      "size": [
+        330,
+        150
+      ],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "positive",
+          "type": "CONDITIONING",
+          "link": 5
+        },
+        {
+          "name": "negative",
+          "type": "CONDITIONING",
+          "link": 6
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 7
+        },
+        {
+          "name": "latent",
+          "type": "LATENT",
+          "link": 8
+        },
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 9
+        }
+      ],
+      "outputs": [
+        {
+          "name": "positive",
+          "type": "CONDITIONING",
+          "links": [
+            10
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "negative",
+          "type": "CONDITIONING",
+          "links": [
+            11
+          ],
+          "slot_index": 1
+        },
+        {
+          "name": "latent",
+          "type": "LATENT",
+          "links": [
+            13
+          ],
+          "slot_index": 2
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LTXVAddGuide"
+      },
+      "widgets_values": [
+        0,
+        1.0
+      ],
+      "_meta": {
+        "title": "10. Pin FIRST frame — frame_idx 0"
+      }
+    },
+    {
+      "id": 11,
+      "type": "LTXVAddGuide",
+      "pos": [
+        600,
+        570
+      ],
+      "size": [
+        330,
+        150
+      ],
+      "flags": {},
+      "order": 10,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "positive",
+          "type": "CONDITIONING",
+          "link": 10
+        },
+        {
+          "name": "negative",
+          "type": "CONDITIONING",
+          "link": 11
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 12
+        },
+        {
+          "name": "latent",
+          "type": "LATENT",
+          "link": 13
+        },
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 14
+        }
+      ],
+      "outputs": [
+        {
+          "name": "positive",
+          "type": "CONDITIONING",
+          "links": [
+            16
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "negative",
+          "type": "CONDITIONING",
+          "links": [
+            17
+          ],
+          "slot_index": 1
+        },
+        {
+          "name": "latent",
+          "type": "LATENT",
+          "links": [
+            22
+          ],
+          "slot_index": 2
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LTXVAddGuide"
+      },
+      "widgets_values": [
+        -1,
+        1.0
+      ],
+      "_meta": {
+        "title": "11. Pin LAST frame — frame_idx -1 (negative index = counted from the end, per core node docs)"
+      }
+    },
+    {
+      "id": 12,
+      "type": "RandomNoise",
+      "pos": [
+        1000,
+        80
+      ],
+      "size": [
+        330,
+        82
+      ],
+      "flags": {},
+      "order": 11,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "NOISE",
+          "type": "NOISE",
+          "links": [
+            18
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "RandomNoise"
+      },
+      "widgets_values": [
+        1,
+        "randomize"
+      ],
+      "_meta": {
+        "title": "12. Seed"
+      }
+    },
+    {
+      "id": 13,
+      "type": "CFGGuider",
+      "pos": [
+        1000,
+        200
+      ],
+      "size": [
+        300,
+        100
+      ],
+      "flags": {},
+      "order": 12,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 15
+        },
+        {
+          "name": "positive",
+          "type": "CONDITIONING",
+          "link": 16
+        },
+        {
+          "name": "negative",
+          "type": "CONDITIONING",
+          "link": 17
+        }
+      ],
+      "outputs": [
+        {
+          "name": "GUIDER",
+          "type": "GUIDER",
+          "links": [
+            19
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "CFGGuider"
+      },
+      "widgets_values": [
+        1.0
+      ],
+      "_meta": {
+        "title": "13. Guider — CFG 1.0 (distilled model)"
+      }
+    },
+    {
+      "id": 14,
+      "type": "KSamplerSelect",
+      "pos": [
+        1000,
+        340
+      ],
+      "size": [
+        330,
+        60
+      ],
+      "flags": {},
+      "order": 13,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "SAMPLER",
+          "type": "SAMPLER",
+          "links": [
+            20
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "KSamplerSelect"
+      },
+      "widgets_values": [
+        "euler_ancestral_cfg_pp"
+      ],
+      "_meta": {
+        "title": "14. Sampler (matches Lightricks' official 2.3 distilled example workflows)"
+      }
+    },
+    {
+      "id": 15,
+      "type": "ManualSigmas",
+      "pos": [
+        1000,
+        440
+      ],
+      "size": [
+        470,
+        90
+      ],
+      "flags": {},
+      "order": 14,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "SIGMAS",
+          "type": "SIGMAS",
+          "links": [
+            21
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "ManualSigmas"
+      },
+      "widgets_values": [
+        "1.0, 0.99375, 0.9875, 0.98125, 0.975, 0.909375, 0.725, 0.421875, 0.0"
+      ],
+      "_meta": {
+        "title": "15. Sigma schedule — official 8-step distilled schedule from Lightricks/ComfyUI-LTXVideo example_workflows/2.3"
+      }
+    },
+    {
+      "id": 16,
+      "type": "SamplerCustomAdvanced",
+      "pos": [
+        1500,
+        80
+      ],
+      "size": [
+        300,
+        130
+      ],
+      "flags": {},
+      "order": 15,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "noise",
+          "type": "NOISE",
+          "link": 18
+        },
+        {
+          "name": "guider",
+          "type": "GUIDER",
+          "link": 19
+        },
+        {
+          "name": "sampler",
+          "type": "SAMPLER",
+          "link": 20
+        },
+        {
+          "name": "sigmas",
+          "type": "SIGMAS",
+          "link": 21
+        },
+        {
+          "name": "latent_image",
+          "type": "LATENT",
+          "link": 22
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output",
+          "type": "LATENT",
+          "links": [
+            23
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "denoised_output",
+          "type": "LATENT",
+          "links": [],
+          "slot_index": 1
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "SamplerCustomAdvanced"
+      },
+      "widgets_values": [],
+      "_meta": {
+        "title": "16. Sample"
+      }
+    },
+    {
+      "id": 17,
+      "type": "VAEDecode",
+      "pos": [
+        1850,
+        80
+      ],
+      "size": [
+        240,
+        54
+      ],
+      "flags": {},
+      "order": 16,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "samples",
+          "type": "LATENT",
+          "link": 23
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 24
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            25
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VAEDecode"
+      },
+      "widgets_values": [],
+      "_meta": {
+        "title": "17. Decode"
+      }
+    },
+    {
+      "id": 18,
+      "type": "ImageFromBatch",
+      "pos": [
+        2150,
+        80
+      ],
+      "size": [
+        330,
+        100
+      ],
+      "flags": {},
+      "order": 17,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 25
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            26
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "ImageFromBatch"
+      },
+      "widgets_values": [
+        0,
+        192
+      ],
+      "_meta": {
+        "title": "18. Drop the extra 193rd frame — keep 192 (8.00s @ 24fps)"
+      }
+    },
+    {
+      "id": 19,
+      "type": "CreateVideo",
+      "pos": [
+        2500,
+        80
+      ],
+      "size": [
+        280,
+        140
+      ],
+      "flags": {},
+      "order": 18,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 26
+        },
+        {
+          "name": "audio",
+          "type": "AUDIO",
+          "link": null,
+          "shape": 7
+        }
+      ],
+      "outputs": [
+        {
+          "name": "VIDEO",
+          "type": "VIDEO",
+          "links": [
+            27
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "CreateVideo"
+      },
+      "widgets_values": [
+        24,
+        8
+      ],
+      "_meta": {
+        "title": "19. Assemble at 24 fps"
+      }
+    },
+    {
+      "id": 20,
+      "type": "SaveVideo",
+      "pos": [
+        2850,
+        80
+      ],
+      "size": [
+        420,
+        358
+      ],
+      "flags": {},
+      "order": 19,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "video",
+          "type": "VIDEO",
+          "link": 27
+        }
+      ],
+      "outputs": [
+        {
+          "name": "video",
+          "type": "VIDEO",
+          "links": [],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "SaveVideo"
+      },
+      "widgets_values": [
+        "video/cafe-loop-ltx23-360p",
+        "auto",
+        "auto"
+      ],
+      "_meta": {
+        "title": "20. Save — ⚠ EXPERIMENTAL graph, not yet render-tested end-to-end; LTX-2 Community License (not Apache 2.0) applies, see MODEL-LICENSES.md before commercial use"
+      }
+    }
+  ],
+  "links": [
+    [
+      1,
+      4,
+      0,
+      9,
+      0,
+      "CONDITIONING"
+    ],
+    [
+      2,
+      5,
+      0,
+      9,
+      1,
+      "CONDITIONING"
+    ],
+    [
+      3,
+      2,
+      0,
+      4,
+      0,
+      "CLIP"
+    ],
+    [
+      4,
+      2,
+      0,
+      5,
+      0,
+      "CLIP"
+    ],
+    [
+      5,
+      9,
+      0,
+      10,
+      0,
+      "CONDITIONING"
+    ],
+    [
+      6,
+      9,
+      1,
+      10,
+      1,
+      "CONDITIONING"
+    ],
+    [
+      7,
+      3,
+      0,
+      10,
+      2,
+      "VAE"
+    ],
+    [
+      8,
+      8,
+      0,
+      10,
+      3,
+      "LATENT"
+    ],
+    [
+      9,
+      6,
+      0,
+      10,
+      4,
+      "IMAGE"
+    ],
+    [
+      10,
+      10,
+      0,
+      11,
+      0,
+      "CONDITIONING"
+    ],
+    [
+      11,
+      10,
+      1,
+      11,
+      1,
+      "CONDITIONING"
+    ],
+    [
+      12,
+      3,
+      0,
+      11,
+      2,
+      "VAE"
+    ],
+    [
+      13,
+      10,
+      2,
+      11,
+      3,
+      "LATENT"
+    ],
+    [
+      14,
+      7,
+      0,
+      11,
+      4,
+      "IMAGE"
+    ],
+    [
+      15,
+      1,
+      0,
+      13,
+      0,
+      "MODEL"
+    ],
+    [
+      16,
+      11,
+      0,
+      13,
+      1,
+      "CONDITIONING"
+    ],
+    [
+      17,
+      11,
+      1,
+      13,
+      2,
+      "CONDITIONING"
+    ],
+    [
+      18,
+      12,
+      0,
+      16,
+      0,
+      "NOISE"
+    ],
+    [
+      19,
+      13,
+      0,
+      16,
+      1,
+      "GUIDER"
+    ],
+    [
+      20,
+      14,
+      0,
+      16,
+      2,
+      "SAMPLER"
+    ],
+    [
+      21,
+      15,
+      0,
+      16,
+      3,
+      "SIGMAS"
+    ],
+    [
+      22,
+      11,
+      2,
+      16,
+      4,
+      "LATENT"
+    ],
+    [
+      23,
+      16,
+      0,
+      17,
+      0,
+      "LATENT"
+    ],
+    [
+      24,
+      3,
+      0,
+      17,
+      1,
+      "VAE"
+    ],
+    [
+      25,
+      17,
+      0,
+      18,
+      0,
+      "IMAGE"
+    ],
+    [
+      26,
+      18,
+      0,
+      19,
+      0,
+      "IMAGE"
+    ],
+    [
+      27,
+      19,
+      0,
+      20,
+      0,
+      "VIDEO"
+    ]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {},
+  "version": 0.4
+}

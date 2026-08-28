@@ -1,0 +1,110 @@
+generation:
+  max_generation_attempts: 3
+  max_material_minutes: 60
+  max_tracks_per_video: 40
+  model: lyria-3-pro-preview
+  output_format: mp3
+  prompt_profile: coffeehouse_lofi_jazz
+  provider: lyria
+  request_delay_seconds: 3
+  safe_rewrite_on_block: true
+metadata:
+  description_template: '{scene}｜咖啡廳爵士，適合讀書、工作、閱讀與深度專注。
+
+
+    🎹 編制：{instrumentation}
+
+    🌿 氛圍：{mood}
+
+    ⏱️ 內容長度：約 {duration_minutes} 分鐘
+
+
+    本音樂由 AI 輔助生成並經過自動化音訊處理與品質檢查。
+
+
+    #LofiJazz #CoffeeShopJazz #StudyMusic #FocusMusic
+
+    '
+  language: zh-TW
+  tags:
+  - lofi jazz
+  - coffee shop jazz
+  - study music
+  - focus music
+  - work music
+  - 咖啡廳音樂
+  - 讀書音樂
+  - 專注音樂
+  title_template: '{scene} ☕ 咖啡廳爵士｜讀書・專注・工作音樂 No.{episode:03d}'
+project:
+  database: workspace/state.sqlite3
+  logs: logs
+  name: Coffeehouse Lofi Jazz
+  random_seed: 20260726
+  timezone: Asia/Taipei
+  workspace: workspace
+quality:
+  loudness_target_lufs: -16
+  max_recent_prompt_signatures: 100
+  minimum_duration_seconds: 20
+  minimum_sample_rate: 44100
+  normalize_audio: true
+  require_stereo: true
+  true_peak_db: -1.5
+scheduler:
+  channel: main
+  cron: 0 9 * * 1,4
+  enabled: false
+  upload: true
+  videos_per_run: 1
+studio:
+  comfyui_base_url: http://127.0.0.1:8188
+  comfyui_remote_base_url: ''
+  chowchow_reference_path: comfyui-assets/character-reference/chowchow/approved/master-lying-transparent-v1.png
+  comfyui_workflows_dir: comfyui-assets/workflows/api
+video:
+  audio_bitrate: 256k
+  background_directory: assets/backgrounds
+  crossfade_seconds: 2
+  default_background_mode: generated
+  fps: 1
+  height: 1080
+  target_duration_minutes: 120
+  thumbnail_height: 720
+  thumbnail_quality: 88
+  thumbnail_width: 1280
+  title_overlay: true
+  video_preset: veryfast
+  width: 1920
+visual:
+  aspect_ratio: '16:9'
+  enabled: false
+  estimated_budget_usd: 10.0
+  image_2k_estimated_usd: 0.101
+  image_candidates_per_scene: 3
+  image_model: gemini-3.1-flash-image
+  image_size: 2K
+  max_image_outputs: 14
+  max_thumbnail_backgrounds: 1
+  max_unique_scenes: 4
+  max_video_outputs: 8
+  max_world_anchor_images: 1
+  poll_interval_seconds: 10
+  preflight:
+    max_image_outputs: 1
+    max_video_outputs: 1
+    valid_days: 30
+  pricing_snapshot_date: '2026-07-29'
+  provider: gemini-developer-api
+  quality:
+    duration_tolerance_seconds: 0.25
+    motion_max_normalized_mae: 0.1
+    motion_min_normalized_mae: 0.002
+    seam_max_normalized_mae: 0.06
+  scene_interval_minutes: 30
+  video_1080p_second_estimated_usd: 0.12
+  video_candidates_per_scene: 2
+  video_duration_seconds: 8
+  video_fps: 24
+  video_model: veo-3.1-fast-generate-preview
+  video_resolution: 1080p

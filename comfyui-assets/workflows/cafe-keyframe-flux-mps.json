@@ -1,0 +1,428 @@
+{
+  "last_node_id": 9,
+  "last_link_id": 9,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "UnetLoaderGGUF",
+      "pos": [
+        100,
+        100
+      ],
+      "size": [
+        350,
+        60
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            1
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {},
+      "widgets_values": [
+        "flux1-schnell-Q4_K_S.gguf"
+      ],
+      "_meta": {
+        "title": "Load FLUX.1 Schnell GGUF (Q4_K_S, MPS-compatible)"
+      }
+    },
+    {
+      "id": 8,
+      "type": "DualCLIPLoaderGGUF",
+      "pos": [
+        100,
+        220
+      ],
+      "size": [
+        350,
+        100
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "CLIP",
+          "type": "CLIP",
+          "links": [
+            2,
+            3
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {},
+      "widgets_values": [
+        "clip_l.safetensors",
+        "t5-v1_1-xxl-encoder-Q4_K_S.gguf",
+        "flux"
+      ],
+      "_meta": {
+        "title": "Load CLIP + T5 GGUF (Q4_K_S, MPS-compatible)"
+      }
+    },
+    {
+      "id": 9,
+      "type": "VAELoader",
+      "pos": [
+        100,
+        380
+      ],
+      "size": [
+        350,
+        60
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "VAE",
+          "type": "VAE",
+          "links": [
+            4
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {},
+      "widgets_values": [
+        "ae.safetensors"
+      ],
+      "_meta": {
+        "title": "Load FLUX VAE"
+      }
+    },
+    {
+      "id": 2,
+      "type": "CLIPTextEncode",
+      "pos": [
+        500,
+        50
+      ],
+      "size": [
+        420,
+        184
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 2
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CONDITIONING",
+          "type": "CONDITIONING",
+          "links": [
+            5
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {},
+      "widgets_values": [
+        "A fictional independent neighborhood cafe, no recognizable location, quiet early morning, realistic wood and stone interior, a single ceramic coffee cup on a worn oak table, soft daylight through frosted glass, subtle steam rising from the cup, gentle curtain movement, natural reflections, documentary photography, photorealistic, cinematic but true-to-life, physically plausible materials, stable wide composition, no logos, no readable text, no identifiable people"
+      ],
+      "_meta": {
+        "title": "Positive Prompt — this fixes the SCENE. Keep the no-logo / no-text / no-identifiable-people terms here."
+      }
+    },
+    {
+      "id": 3,
+      "type": "CLIPTextEncode",
+      "pos": [
+        500,
+        280
+      ],
+      "size": [
+        420,
+        184
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 3
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CONDITIONING",
+          "type": "CONDITIONING",
+          "links": [
+            6
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {},
+      "widgets_values": [
+        "blurry, low quality, worst quality, illustration, cartoon, CGI, 3D render, surreal architecture, impossible geometry, brand logo, trademark, readable sign, celebrity, public figure, recognizable face, watermark, subtitle, text, malformed hands, extra fingers, fused fingers, extra limbs, deformed face, bad anatomy, bad proportions, cropped, out of frame, oversaturated, overexposed"
+      ],
+      "_meta": {
+        "title": "Negative Prompt — INERT at CFG 1.0 (FLUX schnell). Content safety must come from the positive prompt + manual review."
+      }
+    },
+    {
+      "id": 4,
+      "type": "EmptyLatentImage",
+      "pos": [
+        500,
+        520
+      ],
+      "size": [
+        300,
+        100
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "LATENT",
+          "type": "LATENT",
+          "links": [
+            7
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {},
+      "widgets_values": [
+        1280,
+        720,
+        4
+      ],
+      "_meta": {
+        "title": "1280x720 — 16:9 at ~0.92MP (FLUX schnell sweet spot). WAN downscales this to the video resolution."
+      }
+    },
+    {
+      "id": 5,
+      "type": "KSampler",
+      "pos": [
+        1000,
+        100
+      ],
+      "size": [
+        340,
+        290
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 1
+        },
+        {
+          "name": "positive",
+          "type": "CONDITIONING",
+          "link": 5
+        },
+        {
+          "name": "negative",
+          "type": "CONDITIONING",
+          "link": 6
+        },
+        {
+          "name": "latent_image",
+          "type": "LATENT",
+          "link": 7
+        }
+      ],
+      "outputs": [
+        {
+          "name": "LATENT",
+          "type": "LATENT",
+          "links": [
+            8
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {},
+      "widgets_values": [
+        20260810,
+        false,
+        4,
+        1.0,
+        "euler",
+        "simple"
+      ],
+      "_meta": {
+        "title": "KSampler - Schnell 4 Steps CFG 1.0"
+      }
+    },
+    {
+      "id": 6,
+      "type": "VAEDecode",
+      "pos": [
+        1400,
+        100
+      ],
+      "size": [
+        210,
+        46
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "samples",
+          "type": "LATENT",
+          "link": 8
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 4
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            9
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {},
+      "widgets_values": [],
+      "_meta": {
+        "title": "VAE Decode"
+      }
+    },
+    {
+      "id": 7,
+      "type": "SaveImage",
+      "pos": [
+        1670,
+        100
+      ],
+      "size": [
+        400,
+        350
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 9
+        }
+      ],
+      "outputs": [],
+      "properties": {},
+      "widgets_values": [
+        "cafe-keyframe/"
+      ],
+      "_meta": {
+        "title": "Save Commercial Keyframe"
+      }
+    }
+  ],
+  "links": [
+    [
+      1,
+      1,
+      0,
+      5,
+      0,
+      "MODEL"
+    ],
+    [
+      2,
+      8,
+      0,
+      2,
+      0,
+      "CLIP"
+    ],
+    [
+      3,
+      8,
+      0,
+      3,
+      0,
+      "CLIP"
+    ],
+    [
+      4,
+      9,
+      0,
+      6,
+      1,
+      "VAE"
+    ],
+    [
+      5,
+      2,
+      0,
+      5,
+      1,
+      "CONDITIONING"
+    ],
+    [
+      6,
+      3,
+      0,
+      5,
+      2,
+      "CONDITIONING"
+    ],
+    [
+      7,
+      4,
+      0,
+      5,
+      3,
+      "LATENT"
+    ],
+    [
+      8,
+      5,
+      0,
+      6,
+      0,
+      "LATENT"
+    ],
+    [
+      9,
+      6,
+      0,
+      7,
+      0,
+      "IMAGE"
+    ]
+  ],
+  "groups": [],
+  "version": 0.4
+}

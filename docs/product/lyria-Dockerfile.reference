@@ -1,0 +1,14 @@
+FROM python:3.12-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg fonts-noto-cjk \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY pyproject.toml README.md ./
+COPY src ./src
+RUN pip install --no-cache-dir .
+COPY config ./config
+COPY scripts ./scripts
+RUN mkdir -p workspace logs assets/backgrounds secrets
+
+CMD ["lyria-auto", "scheduler"]

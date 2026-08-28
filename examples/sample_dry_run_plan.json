@@ -1,0 +1,54 @@
+{
+  "job_id": 1,
+  "prompts": [
+    {
+      "prompt": "Genre: soft jazz trio. Scene: a rainy bookstore café beside a large window. Mood: warm, peaceful, focused. Tempo: 80 BPM with subtle jazz swing. Instrumentation: upright piano, muted trumpet accents, upright bass, brushed drums. Texture: clean intimate recording with light analog saturation. Atmosphere: a still café interior with gentle air and no distracting sound effects. Production: organic dynamics, smooth stereo image, minimal arrangement. Instrumental only. No vocals and no spoken words. Create a fully original composition suitable for studying and deep focus. Aim for about 150 seconds.",
+      "signature": "405b994ef0cd888cc4ab",
+      "scene": "a rainy bookstore café beside a large window",
+      "mood": "warm, peaceful, focused",
+      "instrumentation": "upright piano, muted trumpet accents, upright bass, brushed drums"
+    },
+    {
+      "prompt": "Genre: relaxed instrumental jazz. Scene: a quiet neighborhood coffee shop with wooden furniture. Mood: warm, peaceful, focused. Tempo: 72 BPM with a relaxed brushed groove. Instrumentation: upright piano, upright bass, brushed drums. Texture: clean intimate recording with light analog saturation. Atmosphere: soft rain tapping on the windows, without spoken voices. Production: organic dynamics, smooth stereo image, minimal arrangement. Instrumental only. No vocals and no spoken words. Create a fully original composition suitable for studying and deep focus. Aim for about 150 seconds.",
+      "signature": "db781d80089b852973e5",
+      "scene": "a quiet neighborhood coffee shop with wooden furniture",
+      "mood": "warm, peaceful, focused",
+      "instrumentation": "upright piano, upright bass, brushed drums"
+    },
+    {
+      "prompt": "Genre: downtempo acoustic jazz. Scene: a quiet neighborhood coffee shop with wooden furniture. Mood: dreamy, soft, comfortable. Tempo: 76 BPM with a gentle downtempo feel. Instrumentation: warm Rhodes piano, double bass, soft brushed percussion. Texture: warm studio tone with delicate natural reverb. Atmosphere: soft rain tapping on the windows, without spoken voices. Production: warm analog mix, natural acoustic space, gentle compression. Instrumental only. No vocals and no spoken words. Create a fully original composition suitable for studying and deep focus. Aim for about 150 seconds.",
+      "signature": "fc6e80c0b5315ad25508",
+      "scene": "a quiet neighborhood coffee shop with wooden furniture",
+      "mood": "dreamy, soft, comfortable",
+      "instrumentation": "warm Rhodes piano, double bass, soft brushed percussion"
+    },
+    {
+      "prompt": "Genre: coffeehouse lofi jazz. Scene: a quiet urban café before sunrise. Mood: warm, peaceful, focused. Tempo: 68 BPM with a lazy swing pulse. Instrumentation: electric piano, vibraphone accents, double bass, light drums. Texture: clean intimate recording with light analog saturation. Atmosphere: dim evening lighting and distant city ambience, without speech. Production: intimate jazz recording, balanced instrumentation, airy soundstage. Instrumental only. No vocals and no spoken words. Create a fully original composition suitable for studying and deep focus. Aim for about 150 seconds.",
+      "signature": "a6b86f9fc86e2dc04242",
+      "scene": "a quiet urban café before sunrise",
+      "mood": "warm, peaceful, focused",
+      "instrumentation": "electric piano, vibraphone accents, double bass, light drums"
+    }
+  ],
+  "metadata": {
+    "title": "a rainy bookstore café beside a large window Coffee Shop Jazz ☕ 讀書・專注・工作音樂｜No.001",
+    "description": "a rainy bookstore café beside a large window 的咖啡廳爵士音樂，適合讀書、工作、閱讀與深度專注。\n\n🎹 編制：upright piano, muted trumpet accents, upright bass, brushed drums\n🌿 氛圍：warm, peaceful, focused\n⏱️ 內容長度：約 10 分鐘\n\n本音樂由 AI 輔助生成並經過自動化音訊處理與品質檢查。\n\n#LofiJazz #CoffeeShopJazz #StudyMusic #FocusMusic\n",
+    "tags": [
+      "lofi jazz",
+      "coffee shop jazz",
+      "study music",
+      "focus music",
+      "work music",
+      "咖啡廳音樂",
+      "讀書音樂",
+      "專注音樂"
+    ],
+    "category_id": "10",
+    "privacy_status": "private",
+    "publish_at": "2026-07-26T18:26:10Z",
+    "made_for_kids": false,
+    "contains_synthetic_media": true,
+    "notify_subscribers": false,
+    "default_language": "zh-TW"
+  }
+}

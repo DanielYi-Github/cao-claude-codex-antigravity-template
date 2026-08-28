@@ -1,0 +1,20 @@
+channels:
+  main:
+    enabled: true
+    client_secret_file: "secrets/client_secret.json"
+    token_file: "secrets/youtube_token_main.json"
+    privacy_status: "private"
+    category_id: "10"
+    playlist:
+      id: ""
+      title: "Coffeehouse Lofi Jazz"
+      create_if_missing: true
+      privacy_status: "public"
+    notify_subscribers: false
+    made_for_kids: false
+    contains_synthetic_media: true
+    default_language: "zh-TW"
+    publish:
+      mode: "scheduled"
+      delay_hours: 24
+      spacing_hours: 24

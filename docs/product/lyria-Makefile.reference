@@ -1,0 +1,19 @@
+.PHONY: setup test doctor dry-run run scheduler
+
+setup:
+	bash scripts/setup.sh
+
+test:
+	.venv/bin/python -m pytest
+
+doctor:
+	.venv/bin/lyria-auto doctor
+
+dry-run:
+	.venv/bin/lyria-auto run --dry-run --videos 1
+
+run:
+	.venv/bin/lyria-auto run --videos 1
+
+scheduler:
+	.venv/bin/lyria-auto scheduler

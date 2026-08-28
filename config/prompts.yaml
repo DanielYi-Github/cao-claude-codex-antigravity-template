@@ -1,0 +1,96 @@
+profiles:
+  coffeehouse_lofi_jazz:
+    genres:
+      - "coffeehouse lofi jazz"
+      - "downtempo acoustic jazz"
+      - "soft jazz trio"
+      - "ambient lounge jazz"
+      - "relaxed instrumental jazz"
+    # en = 餵給 Lyria 的英文描述；zh = 顯示在標題／說明／縮圖的中文短名
+    scenes:
+      - en: "a quiet neighborhood coffee shop with wooden furniture"
+        zh: "靜巷木質咖啡館"
+      - en: "a rainy bookstore café beside a large window"
+        zh: "雨天窗邊書店"
+      - en: "a warm late-night café with dim amber lamps"
+        zh: "深夜暖燈咖啡館"
+      - en: "a peaceful Scandinavian-style coffeehouse"
+        zh: "北歐風寧靜咖啡館"
+      - en: "a small mountain café on a misty morning"
+        zh: "晨霧山中小咖啡館"
+      - en: "a calm library reading corner with soft daylight"
+        zh: "圖書館採光閱讀角"
+      - en: "an autumn café surrounded by golden leaves"
+        zh: "金葉環繞的秋日咖啡館"
+      - en: "a winter coffeehouse with snow outside"
+        zh: "窗外飄雪的冬日咖啡館"
+      - en: "a minimalist wooden coffeehouse with indoor plants"
+        zh: "綠植極簡木質咖啡館"
+      - en: "a quiet urban café before sunrise"
+        zh: "日出前的城市咖啡館"
+      - en: "a cozy fireplace lounge with bookshelves"
+        zh: "壁爐書牆閱讀室"
+      - en: "an oceanfront café during a cloudy afternoon"
+        zh: "陰天海邊咖啡館"
+    moods:
+      - en: ["warm", "peaceful", "focused"]
+        zh: "溫暖・平靜・專注"
+      - en: ["cozy", "gentle", "unhurried"]
+        zh: "舒適・輕柔・從容"
+      - en: ["calm", "intimate", "reflective"]
+        zh: "沉靜・私密・沉思"
+      - en: ["dreamy", "soft", "comfortable"]
+        zh: "夢幻・柔和・放鬆"
+      - en: ["elegant", "quiet", "balanced"]
+        zh: "優雅・安靜・平衡"
+    tempos:
+      - "68 BPM with a lazy swing pulse"
+      - "72 BPM with a relaxed brushed groove"
+      - "76 BPM with a gentle downtempo feel"
+      - "80 BPM with subtle jazz swing"
+    instrumentations:
+      - ["upright piano", "upright bass", "brushed drums"]
+      - ["warm Rhodes piano", "double bass", "soft brushed percussion"]
+      - ["felt piano", "nylon-string guitar", "upright bass", "brushes"]
+      - ["electric piano", "vibraphone accents", "double bass", "light drums"]
+      - ["upright piano", "muted trumpet accents", "upright bass", "brushed drums"]
+      - ["Rhodes piano", "mellow electric guitar", "acoustic bass", "soft percussion"]
+    textures:
+      - "subtle vinyl crackle and gentle analog tape warmth"
+      - "soft tape hiss with natural wooden-room resonance"
+      - "clean intimate recording with light analog saturation"
+      - "dusty room ambience and restrained cassette texture"
+      - "warm studio tone with delicate natural reverb"
+    atmospheres:
+      - "soft rain tapping on the windows, without spoken voices"
+      - "quiet morning sunlight and a spacious reading atmosphere"
+      - "dim evening lighting and distant city ambience, without speech"
+      - "snow falling outside and a warm indoor acoustic space"
+      - "a calm room with books, coffee, and minimal background movement"
+      - "a still café interior with gentle air and no distracting sound effects"
+    productions:
+      - "organic dynamics, smooth stereo image, minimal arrangement"
+      - "warm analog mix, natural acoustic space, gentle compression"
+      - "clean low-end, soft transients, restrained high frequencies"
+      - "intimate jazz recording, balanced instrumentation, airy soundstage"
+    # 刻意不指定秒數：實測不提長度會拿到約 173 秒（接近模型上限），
+    # 而要求「150 秒」只會拿到 144 秒。計費是按「首」算、與長度無關，
+    # 所以指定較短的秒數等於同樣的錢買到更少音樂。
+    outputs:
+      - "Instrumental only. No vocals and no spoken words. Create a fully original composition suitable for studying and deep focus."
+
+blocked_reference_terms:
+  - "in the style of"
+  - "sounds like"
+  - "similar to"
+  - "copy"
+  - "clone"
+  - "remake"
+  - "recreate"
+  - "spotify"
+  - "disney"
+  - "studio ghibli"
+  - "nujabes"
+  - "j dilla"
+  - "miles davis"
+  - "joe hisaishi"

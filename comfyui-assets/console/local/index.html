@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Cafe Loop 審核台</title><link rel="stylesheet" href="styles.css"></head>
+<body>
+<main>
+  <header><p class="eyebrow">COMFYUI · HUMAN-IN-THE-LOOP</p><h1>Cafe Loop 審核台</h1><p>同一張核准圖片，依序通過 480P 動態預覽，再交給雲端輸出 1080P。</p></header>
+  <nav id="steps"><span>01 關鍵圖片</span><span>02 480P 預覽</span><span>03 雲端 1080P</span></nav>
+  <section id="image" class="card">
+    <div class="label">第一關</div><h2>生成 4 張並核准其中一張</h2>
+    <label>圖片提示詞<textarea id="imagePrompt" rows="4" placeholder="描述咖啡館的構圖、光線與材質"></textarea></label>
+    <a class="secondary" href="/api/workflow/image">下載圖片 workflow</a>
+    <label>ComfyUI 根目錄（貼 input／output 路徑也可以）<input id="comfyDir" placeholder="/Users/you/ComfyUI"></label>
+    <label>核准圖片檔名（可位於 input 或 output）<input id="outputFile" placeholder="cafe-keyframe/ComfyUI_00001_.png"></label>
+    <label>影片動作提示詞<textarea id="motionPrompt" rows="4" placeholder="locked-off camera, steam rising gently…"></textarea></label>
+    <button id="approveImage">核准這張圖，繼續</button>
+    <p id="imageNotice" class="notice" role="status"></p>
+  </section>
+  <section id="preview" class="card locked"><div class="label">第二關</div><h2>480P・8 秒循環預覽</h2><p id="imageName">等待核准圖片</p><a class="secondary" href="/api/workflow/preview">下載 480P workflow</a><button id="approvePreview">預覽沒有問題，送往下一關</button></section>
+  <section id="cloud" class="card locked"><div class="label">第三關</div><h2>建立雲端 1080P 工作包</h2><p>包含已核准圖片、相同動作提示詞、1280×720 WAN 生成與 1920×1080 成片 workflow。</p><button id="bundle">下載雲端工作包</button></section>
+  <button id="reset" class="text">重設全部核准狀態</button><p id="notice" role="status"></p>
+</main><script src="app.js"></script>
+</body></html>

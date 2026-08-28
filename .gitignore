@@ -26,6 +26,9 @@ artifacts/*
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.ruff_cache/
+*.egg-info/
+.venv/
 
 # Local editor and OS files
 .DS_Store
@@ -34,3 +37,23 @@ __pycache__/
 
 # Optional sibling worktrees created for workers
 .worktrees/
+
+# --- lyria_auto / chowchow studio runtime ---
+secrets/*
+!secrets/.gitkeep
+workspace/*
+!workspace/.gitkeep
+logs/*
+!logs/.gitkeep
+assets/backgrounds/*
+!assets/backgrounds/.gitkeep
+
+# Private chow chow reference photos, videos, and intermediate drafts.
+# Keep the approved, production-ready references versionable by default.
+comfyui-assets/character-reference/chowchow/source/*
+!comfyui-assets/character-reference/chowchow/source/.gitkeep
+comfyui-assets/character-reference/chowchow/working/*
+!comfyui-assets/character-reference/chowchow/working/.gitkeep
+comfyui-assets/.staged/
+console/node_modules/
+console/.git/

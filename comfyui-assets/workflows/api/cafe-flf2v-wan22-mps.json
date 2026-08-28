@@ -1,0 +1,320 @@
+{
+  "1": {
+    "inputs": {
+      "unet_name": "Wan2.2-I2V-A14B-HighNoise-Q5_K_M.gguf"
+    },
+    "class_type": "UnetLoaderGGUF",
+    "_meta": {
+      "title": "Unet Loader (GGUF)"
+    }
+  },
+  "2": {
+    "inputs": {
+      "unet_name": "Wan2.2-I2V-A14B-LowNoise-Q5_K_M.gguf"
+    },
+    "class_type": "UnetLoaderGGUF",
+    "_meta": {
+      "title": "Unet Loader (GGUF)"
+    }
+  },
+  "3": {
+    "inputs": {
+      "clip_name": "umt5-xxl-encoder-Q8_0.gguf",
+      "type": "wan"
+    },
+    "class_type": "CLIPLoaderGGUF",
+    "_meta": {
+      "title": "CLIPLoader (GGUF)"
+    }
+  },
+  "4": {
+    "inputs": {
+      "vae_name": "wan_2.1_vae.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "載入 VAE"
+    }
+  },
+  "5": {
+    "inputs": {
+      "text": "A fictional small cafe with a warm wood interior and a large side window, late afternoon sunlight resting softly across the table, dust particles drifting slowly in a narrow sunbeam, steam curling gently from a fresh coffee, a potted plant leaf swaying slightly, realistic shadows and natural lens exposure, true-to-life live-action documentary photography, physically plausible materials and motion, locked-off camera, stable composition, only subtle ambient motion, smooth continuous loop returning to the same composition, no camera movement, no scene change, no new objects, no logos, no readable text, no recognizable location, no identifiable people",
+      "clip": [
+        "3",
+        0
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "CLIP 文字編碼（提示詞）"
+    }
+  },
+  "6": {
+    "inputs": {
+      "text": "camera shake, zoom, pan, fast camera movement, scene transition, flicker, strobing, frozen motion, static motion, object morphing, changing layout, new objects, disappearing objects, warped geometry, distorted cup, duplicate objects, blurry, low quality, worst quality, oversaturated, overexposed, underexposed, cropped, out of frame",
+      "clip": [
+        "3",
+        0
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "CLIP 文字編碼（提示詞）"
+    }
+  },
+  "7": {
+    "inputs": {
+      "image": "inspect_1367338573.png"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "載入圖片"
+    }
+  },
+  "8": {
+    "inputs": {
+      "image": "inspect_1367338573.png"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "載入圖片"
+    }
+  },
+  "9": {
+    "inputs": {
+      "width": 1024,
+      "height": 576,
+      "length": 65,
+      "batch_size": 1,
+      "positive": [
+        "5",
+        0
+      ],
+      "negative": [
+        "6",
+        0
+      ],
+      "vae": [
+        "4",
+        0
+      ],
+      "start_image": [
+        "7",
+        0
+      ],
+      "end_image": [
+        "8",
+        0
+      ]
+    },
+    "class_type": "WanFirstLastFrameToVideo",
+    "_meta": {
+      "title": "Wan 首尾影格轉影片"
+    }
+  },
+  "10": {
+    "inputs": {
+      "lora_name": "wan2.2_i2v_A14B_high_noise_lightning_4step.safetensors",
+      "strength_model": 1,
+      "model": [
+        "1",
+        0
+      ]
+    },
+    "class_type": "LoraLoaderModelOnly",
+    "_meta": {
+      "title": "LoraLoaderModelOnly"
+    }
+  },
+  "11": {
+    "inputs": {
+      "shift": 8,
+      "model": [
+        "10",
+        0
+      ]
+    },
+    "class_type": "ModelSamplingSD3",
+    "_meta": {
+      "title": "模型取樣 SD3"
+    }
+  },
+  "12": {
+    "inputs": {
+      "lora_name": "wan2.2_i2v_A14B_low_noise_lightning_4step.safetensors",
+      "strength_model": 1,
+      "model": [
+        "2",
+        0
+      ]
+    },
+    "class_type": "LoraLoaderModelOnly",
+    "_meta": {
+      "title": "LoraLoaderModelOnly"
+    }
+  },
+  "13": {
+    "inputs": {
+      "shift": 8,
+      "model": [
+        "12",
+        0
+      ]
+    },
+    "class_type": "ModelSamplingSD3",
+    "_meta": {
+      "title": "模型取樣 SD3"
+    }
+  },
+  "14": {
+    "inputs": {
+      "add_noise": "enable",
+      "noise_seed": 49592966745857,
+      "steps": 4,
+      "cfg": 1,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "start_at_step": 0,
+      "end_at_step": 2,
+      "return_with_leftover_noise": "enable",
+      "model": [
+        "11",
+        0
+      ],
+      "positive": [
+        "9",
+        0
+      ],
+      "negative": [
+        "9",
+        1
+      ],
+      "latent_image": [
+        "9",
+        2
+      ]
+    },
+    "class_type": "KSamplerAdvanced",
+    "_meta": {
+      "title": "KSampler（進階）"
+    }
+  },
+  "15": {
+    "inputs": {
+      "add_noise": "disable",
+      "noise_seed": 0,
+      "steps": 4,
+      "cfg": 1,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "start_at_step": 2,
+      "end_at_step": 10000,
+      "return_with_leftover_noise": "disable",
+      "model": [
+        "13",
+        0
+      ],
+      "positive": [
+        "9",
+        0
+      ],
+      "negative": [
+        "9",
+        1
+      ],
+      "latent_image": [
+        "14",
+        0
+      ]
+    },
+    "class_type": "KSamplerAdvanced",
+    "_meta": {
+      "title": "KSampler（進階）"
+    }
+  },
+  "16": {
+    "inputs": {
+      "samples": [
+        "15",
+        0
+      ],
+      "vae": [
+        "4",
+        0
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "VAE 解碼"
+    }
+  },
+  "17": {
+    "inputs": {
+      "model_name": "rife_v4.26.safetensors"
+    },
+    "class_type": "FrameInterpolationModelLoader",
+    "_meta": {
+      "title": "載入影格插值模型"
+    }
+  },
+  "18": {
+    "inputs": {
+      "multiplier": 2,
+      "interp_model": [
+        "17",
+        0
+      ],
+      "images": [
+        "16",
+        0
+      ]
+    },
+    "class_type": "FrameInterpolate",
+    "_meta": {
+      "title": "影格插值"
+    }
+  },
+  "19": {
+    "inputs": {
+      "batch_index": 0,
+      "length": 128,
+      "image": [
+        "18",
+        0
+      ]
+    },
+    "class_type": "ImageFromBatch",
+    "_meta": {
+      "title": "從批次擷取影像"
+    }
+  },
+  "20": {
+    "inputs": {
+      "fps": 16,
+      "bit_depth": 8,
+      "images": [
+        "19",
+        0
+      ]
+    },
+    "class_type": "CreateVideo",
+    "_meta": {
+      "title": "建立影片"
+    }
+  },
+  "21": {
+    "inputs": {
+      "filename_prefix": "video/cafe-loop-wan22",
+      "format": "auto",
+      "codec": "auto",
+      "video": [
+        "20",
+        0
+      ]
+    },
+    "class_type": "SaveVideo",
+    "_meta": {
+      "title": "儲存影片"
+    }
+  }
+}

@@ -1,0 +1,209 @@
+{
+  "1": {
+    "class_type": "UnetLoaderGGUF",
+    "inputs": {
+      "unet_name": "flux1-schnell-Q4_K_S.gguf"
+    }
+  },
+  "2": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "text": "A fictional independent neighborhood cafe with a warm wood interior, no recognizable location, a clear unobstructed foreground wooden floor area near the lower right of the composition, a wooden chair pulled out beside a small table, a laptop on the table glowing softly, a ceramic coffee mug with gentle steam, soft daylight through frosted glass, realistic wood and stone textures, documentary photography, photorealistic, cinematic but true-to-life, physically plausible materials, stable wide composition, no animal or pet anywhere in the background, no logos, no readable text, no identifiable people",
+      "clip": [
+        "8",
+        0
+      ]
+    }
+  },
+  "3": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "text": "blurry, low quality, worst quality, illustration, cartoon, CGI, 3D render, surreal architecture, impossible geometry, brand logo, trademark, readable sign, dog, animal, pet, duplicate animal, recognizable face, watermark, subtitle, text, malformed hands, extra fingers, fused fingers, extra limbs, deformed face, bad anatomy, bad proportions, cropped, out of frame, oversaturated, overexposed",
+      "clip": [
+        "8",
+        0
+      ]
+    }
+  },
+  "4": {
+    "class_type": "EmptyLatentImage",
+    "inputs": {
+      "width": 1280,
+      "height": 720,
+      "batch_size": 4
+    }
+  },
+  "5": {
+    "class_type": "KSampler",
+    "inputs": {
+      "seed": 20260810,
+      "steps": 4,
+      "cfg": 1,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "denoise": 1,
+      "model": [
+        "1",
+        0
+      ],
+      "positive": [
+        "2",
+        0
+      ],
+      "negative": [
+        "3",
+        0
+      ],
+      "latent_image": [
+        "4",
+        0
+      ]
+    }
+  },
+  "6": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": [
+        "5",
+        0
+      ],
+      "vae": [
+        "9",
+        0
+      ]
+    }
+  },
+  "7": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "filename_prefix": "cafe-keyframe-chowchow/",
+      "images": [
+        "18",
+        0
+      ]
+    }
+  },
+  "8": {
+    "class_type": "DualCLIPLoaderGGUF",
+    "inputs": {
+      "clip_name1": "clip_l.safetensors",
+      "clip_name2": "t5-v1_1-xxl-encoder-Q4_K_S.gguf",
+      "type": "flux"
+    }
+  },
+  "9": {
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "ae.safetensors"
+    }
+  },
+  "10": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "studio-chowchow-lying.png"
+    }
+  },
+  "11": {
+    "class_type": "InvertMask",
+    "inputs": {
+      "mask": [
+        "10",
+        1
+      ]
+    }
+  },
+  "12": {
+    "class_type": "ImageScale",
+    "inputs": {
+      "upscale_method": "lanczos",
+      "width": 512,
+      "height": 341,
+      "crop": "disabled",
+      "image": [
+        "10",
+        0
+      ]
+    }
+  },
+  "13": {
+    "class_type": "MaskToImage",
+    "inputs": {
+      "mask": [
+        "11",
+        0
+      ]
+    }
+  },
+  "14": {
+    "class_type": "ImageScale",
+    "inputs": {
+      "upscale_method": "lanczos",
+      "width": 512,
+      "height": 341,
+      "crop": "disabled",
+      "image": [
+        "13",
+        0
+      ]
+    }
+  },
+  "15": {
+    "class_type": "ImageToMask",
+    "inputs": {
+      "image": [
+        "14",
+        0
+      ],
+      "channel": "red"
+    }
+  },
+  "16": {
+    "class_type": "ImageCompositeMasked",
+    "inputs": {
+      "destination": [
+        "6",
+        0
+      ],
+      "source": [
+        "17",
+        0
+      ],
+      "x": 384,
+      "y": 360,
+      "resize_source": false,
+      "mask": [
+        "15",
+        0
+      ]
+    }
+  },
+  "17": {
+    "class_type": "ColorTransfer",
+    "inputs": {
+      "image_target": [
+        "12",
+        0
+      ],
+      "image_ref": [
+        "6",
+        0
+      ],
+      "method": "reinhard_lab",
+      "source_stats": "per_frame",
+      "strength": 0.35
+    }
+  },
+  "18": {
+    "class_type": "ImageScale",
+    "inputs": {
+      "upscale_method": "lanczos",
+      "width": 854,
+      "height": 480,
+      "crop": "disabled",
+      "image": [
+        "16",
+        0
+      ]
+    }
+  }
+}

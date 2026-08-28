@@ -1,0 +1,86 @@
+{
+  "1": {
+    "class_type": "UnetLoaderGGUF",
+    "inputs": {
+      "unet_name": "flux1-schnell-Q4_K_S.gguf"
+    }
+  },
+  "2": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "text": "",
+      "clip": ["8", 0]
+    }
+  },
+  "3": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "text": "",
+      "clip": ["8", 0]
+    }
+  },
+  "4": {
+    "class_type": "EmptyLatentImage",
+    "inputs": {
+      "width": 1280,
+      "height": 720,
+      "batch_size": 4
+    }
+  },
+  "5": {
+    "class_type": "KSampler",
+    "inputs": {
+      "seed": 20260810,
+      "steps": 4,
+      "cfg": 1,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "denoise": 1,
+      "model": ["20", 0],
+      "positive": ["2", 0],
+      "negative": ["3", 0],
+      "latent_image": ["4", 0]
+    }
+  },
+  "6": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": ["5", 0],
+      "vae": ["9", 0]
+    }
+  },
+  "7": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "filename_prefix": "cafe-keyframe/",
+      "images": ["6", 0]
+    }
+  },
+  "8": {
+    "class_type": "DualCLIPLoaderGGUF",
+    "inputs": {
+      "clip_name1": "clip_l.safetensors",
+      "clip_name2": "t5-v1_1-xxl-encoder-Q4_K_S.gguf",
+      "type": "flux"
+    }
+  },
+  "9": {
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "ae.safetensors"
+    }
+  },
+  "20": {
+    "class_type": "LoraLoader",
+    "_meta": {
+      "note": "Node id 20 is intentionally not 10: stages.py's generate_keyframe() has a `if \"10\" in workflow` branch that assumes node 10 is the composite workflow's character-cutout LoadImage node and patches an `image` field onto it. Keeping this LoRA loader off id 10 lets that branch correctly no-op for this workflow instead of misfiring."
+    },
+    "inputs": {
+      "lora_name": "chowchow-identity-v1.safetensors",
+      "strength_model": 0.9,
+      "strength_clip": 0,
+      "model": ["1", 0],
+      "clip": ["8", 0]
+    }
+  }
+}

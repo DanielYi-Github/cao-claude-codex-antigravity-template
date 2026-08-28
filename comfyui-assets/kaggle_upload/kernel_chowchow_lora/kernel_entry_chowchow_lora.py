@@ -1,0 +1,460 @@
+"""Kaggle kernel 進入點：訓練松獅犬吉祥物角色 LoRA。
+透過 kernel-metadata.json 的 dataset_sources 掛載：
+- danielyiyi/chowchow-mascot-lora-dataset（18 張真實生活照/影片截圖 + caption）
+
+用 ai-toolkit（https://github.com/ostris/ai-toolkit）訓練。原本走
+FLUX.1-schnell + 官方 assistant adapter（ostris/FLUX.1-schnell-training
+-adapter）這條路，因為 schnell 是蒸餾過的少步數模型、需要這個 adapter
+在訓練時暫時「還原」成可訓練的多步驟模型，理論上能跟本機 ComfyUI 現有的
+flux1-schnell-Q4_K_S.gguf + CFG 1 + 4-step 推論方式完全對齊。但這個 adapter
+的「融合」步驟本身極度吃顯存（ai-toolkit 官方註解自己都寫「low_vram 融合
+adapter 時會很慢」），在 T4 16GB 上一路排除掉其他瓶頸後，最後卡在這一步
+過不去。改訓練 **FLUX.1-dev**（不蒸餾，不需要 assistant adapter，直接繞開
+這個痛點）；代價是訓練出的 LoRA 要套在本機 schnell 推論上，身份保留度不一定
+跟同模型訓練/推論一樣完美，但社群經驗上通常可接受，且 comfyui 那邊本來就有
+「如果 schnell 效果不夠就切 FLUX.1-dev 推論」的備案（見 chowchow-integration
+-plan.md）。
+
+HF token 原本想透過 Kaggle Secrets 注入，但 Kaggle 有個已知限制：透過網頁
+Add-ons -> Secrets 掛的 secret，只在網頁編輯器互動執行時有效，CLI
+`kaggle kernels push` 觸發的執行完全讀不到（社群多次回報同樣的
+ConnectionError / HTTP 400，官方目前無法在 kernel-metadata.json 指定
+secrets）。改用跟訓練照片一樣的機制：token 放進一個獨立的私有 dataset
+（danielyiyi/chowchow-lora-hf-token，只有一個 hf_token.txt），透過
+dataset_sources 掛載進來直接讀檔案，不寫死在程式碼裡。FLUX.1-dev 在
+Hugging Face 是 gated model，這個 token 需要先登入 HF 帳號接受授權條款
+（已確認這個 token 對 dev 也有存取權限，不用重新申請）。
+
+T4 只有 16GB VRAM，`patch_ai_toolkit_for_t4()` 修了三個 ai-toolkit 本身的
+問題（過程記錄見對話紀錄，這裡只寫結論）：
+1. **T5 全精度載入瞬間爆掉**：文字編碼器一定會先以全精度（bf16，
+   T5-XXL ~9.5GB）搬上跟已量化的 transformer 同一張卡，量化「之後」才會
+   縮小；改成 transformer 量化完先丟回 CPU 讓 T5 用滿整張卡載入+量化，
+   量化完再搬回 GPU，兩個重的模型錯開時間點。
+2. **`qtype_te` 是死設定**：T5 的 `quantize()` 呼叫寫死用
+   `self.model_config.qtype`（transformer 的量化精度），根本沒讀
+   `qtype_te`；patch 改成真的讀 `qtype_te`。
+3. **`BaseSDTrainProcess.py` 在 `load_model()` 跑完之後，又對已經量化好的
+   transformer 呼叫一次 `unet.to(self.device_torch, dtype=dtype)`，明確
+   指定 `dtype=bf16`**——這行不管訓練的是 schnell+adapter 還是 dev，都在
+   模型載入完成後準時的同一個時間點炸掉同樣的量，證明先前懷疑的「adapter
+   融合很吃顯存」是誤判（換成 dev、拿掉 adapter 之後這個 OOM 完全沒變）。
+   合理懷疑是這個明確的 dtype 轉換把量化過的凍結權重解量化回全精度
+   （12B 參數的 bf16 版本，~24GB），不管量化精度調多低都沒用，因為問題
+   不是「常駐大小」而是這行本身在嘗試臨時把它還原。patch 成：模型有量化時
+   只做裝置搬移、不帶 dtype 參數。
+`model.qtype` / `qtype_te` 都設 `"uint4"`（transformer 和文字編碼器都降到
+4-bit，換取足夠的顯存餘裕），畫質可能受影響，等真的跑出結果再評估。
+`model.te_device` 這個設定經查證是 flux2/wan21 等新架構才有接上的死設定，
+對這裡的 FLUX.1 完全沒用，沒有採用。
+"""
+import glob
+import os
+import shutil
+import subprocess
+import sys
+
+AI_TOOLKIT_DIR = "/kaggle/working/ai-toolkit"
+CONFIG_PATH = "/kaggle/working/chowchow_lora_config.yaml"
+OUTPUT_NAME = "chowchow_mascot_v1"
+FINAL_SAFETENSORS = "/kaggle/working/chowchow-identity-v1.safetensors"
+
+CONFIG_YAML = """
+job: extension
+config:
+  name: "{output_name}"
+  process:
+    - type: 'sd_trainer'
+      training_folder: "/kaggle/working/output"
+      device: cuda:0
+      trigger_word: "chowchow_mascot"
+      network:
+        type: "lora"
+        linear: 8
+        linear_alpha: 8
+      save:
+        dtype: float16
+        save_every: 500
+        max_step_saves_to_keep: 2
+        push_to_hub: false
+      datasets:
+        - folder_path: "{dataset_dir}"
+          caption_ext: "txt"
+          caption_dropout_rate: 0.05
+          shuffle_tokens: false
+          cache_latents_to_disk: true
+          resolution: [512]
+      train:
+        batch_size: 1
+        steps: 2000
+        gradient_accumulation_steps: 1
+        train_unet: true
+        train_text_encoder: false
+        gradient_checkpointing: true
+        cache_text_embeddings: true
+        unload_text_encoder: true
+        noise_scheduler: "flowmatch"
+        optimizer: "adamw8bit"
+        optimizer_params:
+          is_paged: true
+        lr: 1e-4
+        ema_config:
+          use_ema: false
+        dtype: bf16
+      model:
+        name_or_path: "black-forest-labs/FLUX.1-dev"
+        is_flux: true
+        quantize: true
+        low_vram: true
+        qtype: "uint4"
+        qtype_te: "uint4"
+      sample:
+        sampler: "flowmatch"
+        sample_every: 500
+        sample_start_step: 0
+        width: 512
+        height: 512
+        prompts:
+          - "chowchow_mascot lying on a wooden cafe floor, warm window light, photorealistic"
+          - "chowchow_mascot sitting on a rug indoors, soft daylight, photorealistic"
+          - "chowchow_mascot standing outdoors in a park, natural daylight, photorealistic"
+        neg: ""
+        seed: 42
+        walk_seed: true
+        guidance_scale: 4
+        sample_steps: 20
+meta:
+  name: "[name]"
+  version: '1.0'
+"""
+
+
+def find_dir(pattern):
+    matches = [m for m in glob.glob(pattern, recursive=True) if os.path.isdir(m)]
+    assert matches, f"找不到符合 {pattern} 的資料夾，目前 /kaggle/input 內容：{os.listdir('/kaggle/input')}"
+    return matches[0]
+
+
+def run(cmd, **kwargs):
+    print(f"$ {' '.join(cmd)}", flush=True)
+    subprocess.run(cmd, check=True, **kwargs)
+
+
+def patch_ai_toolkit_for_t4():
+    """toolkit/stable_diffusion_model.py always loads T5 onto the same
+    device as the (already-quantized) transformer at full bf16 precision,
+    quantizing it in place only afterward -- so there's an unavoidable
+    moment where a quantized ~12B-param transformer and a full-precision
+    T5-XXL (~9.5GB) are both resident at once. That's what OOMs a 14.56GB
+    T4 regardless of LoRA rank/resolution/te_device (confirmed te_device is
+    dead code for classic FLUX.1 in this file -- it's only wired up for the
+    newer flux2/wan21/etc. model classes). Patch: move the transformer to
+    CPU right before T5 loads, move it back once T5 is quantized down.
+    """
+    path = os.path.join(AI_TOOLKIT_DIR, "toolkit", "stable_diffusion_model.py")
+    src = open(path).read()
+
+    if "chowchow patch" in src:
+        print("patch_ai_toolkit_for_t4: already patched (AI_TOOLKIT_DIR was reused across runs), skipping")
+        return
+
+    anchor_a = (
+        "            else:\n"
+        "                transformer.to(self.device_torch, dtype=dtype)\n"
+        "\n"
+        "            flush()\n"
+        "\n"
+        "            scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(base_model_path, subfolder=\"scheduler\")"
+    )
+    replacement_a = (
+        "            else:\n"
+        "                transformer.to(self.device_torch, dtype=dtype)\n"
+        "\n"
+        "            flush()\n"
+        "            transformer.to('cpu')  # chowchow patch: free the T4 for T5's full-precision load\n"
+        "            flush()\n"
+        "\n"
+        "            scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(base_model_path, subfolder=\"scheduler\")"
+    )
+    assert anchor_a in src, "patch_ai_toolkit_for_t4: anchor_a not found, upstream file changed"
+    src = src.replace(anchor_a, replacement_a, 1)
+
+    # Upstream bug (not ours to fix generally, just working around it here):
+    # the T5 quantize call hardcodes `self.model_config.qtype` -- the
+    # transformer's quantization type -- instead of reading `qtype_te`, so
+    # qtype_te is silently ignored for classic FLUX.1 no matter what the
+    # config says. Same class of dead-config issue as te_device.
+    anchor_b = (
+        "            if self.model_config.quantize_te:\n"
+        "                self.print_and_status_update(\"Quantizing T5\")\n"
+        "                quantize(text_encoder_2, weights=get_qtype(self.model_config.qtype))\n"
+        "                freeze(text_encoder_2)\n"
+        "                flush()\n"
+        "                \n"
+        "            self.print_and_status_update(\"Loading CLIP\")"
+    )
+    replacement_b = (
+        "            if self.model_config.quantize_te:\n"
+        "                self.print_and_status_update(\"Quantizing T5\")\n"
+        "                print(f'chowchow patch: quantizing T5 with qtype_te={self.model_config.qtype_te!r}"
+        " (was hardcoded to qtype={self.model_config.qtype!r})')\n"
+        "                quantize(text_encoder_2, weights=get_qtype(self.model_config.qtype_te))"
+        "  # chowchow patch: use qtype_te, not qtype\n"
+        "                freeze(text_encoder_2)\n"
+        "                flush()\n"
+        "            print(f'chowchow patch: pre-restore mem_allocated={torch.cuda.memory_allocated()/1e9:.2f}GB"
+        " mem_reserved={torch.cuda.memory_reserved()/1e9:.2f}GB')\n"
+        "            transformer.to(self.device_torch)  # chowchow patch: T5 is quantized/small now, bring transformer back\n"
+        "            flush()\n"
+        "                \n"
+        "            self.print_and_status_update(\"Loading CLIP\")"
+    )
+    assert anchor_b in src, "patch_ai_toolkit_for_t4: anchor_b not found, upstream file changed"
+    src = src.replace(anchor_b, replacement_b, 1)
+
+    # v16 got past the anchor_b restore (uint4 transformer fits) but OOMed
+    # ~40s later, somewhere between here and the end of this block. Instrument
+    # every step so the next run pinpoints it instead of guessing again.
+    anchor_c = (
+        "            self.print_and_status_update(\"Loading CLIP\")\n"
+        "            text_encoder = CLIPTextModel.from_pretrained(base_model_path, subfolder=\"text_encoder\", torch_dtype=dtype)\n"
+        "            tokenizer = CLIPTokenizer.from_pretrained(base_model_path, subfolder=\"tokenizer\", torch_dtype=dtype)\n"
+        "            text_encoder.to(self.device_torch, dtype=dtype)\n"
+        "\n"
+        "            self.print_and_status_update(\"Making pipe\")\n"
+        "            Pipe = FluxPipeline\n"
+        "            \n"
+        "            pipe: Pipe = Pipe(\n"
+        "                scheduler=scheduler,\n"
+        "                text_encoder=text_encoder,\n"
+        "                tokenizer=tokenizer,\n"
+        "                text_encoder_2=None,\n"
+        "                tokenizer_2=tokenizer_2,\n"
+        "                vae=vae,\n"
+        "                transformer=None,\n"
+        "            )\n"
+        "            pipe.text_encoder_2 = text_encoder_2\n"
+        "            pipe.transformer = transformer\n"
+        "\n"
+        "            self.print_and_status_update(\"Preparing Model\")\n"
+        "\n"
+        "            text_encoder = [pipe.text_encoder, pipe.text_encoder_2]\n"
+        "            tokenizer = [pipe.tokenizer, pipe.tokenizer_2]\n"
+        "\n"
+        "            pipe.transformer = pipe.transformer.to(self.device_torch)\n"
+        "\n"
+        "            flush()\n"
+        "            text_encoder[0].to(self.device_torch)\n"
+        "            text_encoder[0].requires_grad_(False)\n"
+        "            text_encoder[0].eval()\n"
+        "            text_encoder[1].to(self.device_torch)\n"
+        "            text_encoder[1].requires_grad_(False)\n"
+        "            text_encoder[1].eval()\n"
+        "            pipe.transformer = pipe.transformer.to(self.device_torch)\n"
+        "            flush()\n"
+    )
+    def _mem(label):
+        return (
+            f"            print(f'chowchow patch: {label} "
+            "mem_allocated={torch.cuda.memory_allocated()/1e9:.2f}GB "
+            "mem_reserved={torch.cuda.memory_reserved()/1e9:.2f}GB')\n"
+        )
+    replacement_c = (
+        "            self.print_and_status_update(\"Loading CLIP\")\n"
+        "            text_encoder = CLIPTextModel.from_pretrained(base_model_path, subfolder=\"text_encoder\", torch_dtype=dtype)\n"
+        "            tokenizer = CLIPTokenizer.from_pretrained(base_model_path, subfolder=\"tokenizer\", torch_dtype=dtype)\n"
+        "            text_encoder.to(self.device_torch, dtype=dtype)\n"
+        + _mem("after CLIP to device") +
+        "\n"
+        "            self.print_and_status_update(\"Making pipe\")\n"
+        "            Pipe = FluxPipeline\n"
+        "            \n"
+        "            pipe: Pipe = Pipe(\n"
+        "                scheduler=scheduler,\n"
+        "                text_encoder=text_encoder,\n"
+        "                tokenizer=tokenizer,\n"
+        "                text_encoder_2=None,\n"
+        "                tokenizer_2=tokenizer_2,\n"
+        "                vae=vae,\n"
+        "                transformer=None,\n"
+        "            )\n"
+        "            pipe.text_encoder_2 = text_encoder_2\n"
+        "            pipe.transformer = transformer\n"
+        + _mem("after pipe built") +
+        "\n"
+        "            self.print_and_status_update(\"Preparing Model\")\n"
+        "\n"
+        "            text_encoder = [pipe.text_encoder, pipe.text_encoder_2]\n"
+        "            tokenizer = [pipe.tokenizer, pipe.tokenizer_2]\n"
+        "\n"
+        "            pipe.transformer = pipe.transformer.to(self.device_torch)\n"
+        + _mem("after 1st redundant transformer.to") +
+        "\n"
+        "            flush()\n"
+        "            text_encoder[0].to(self.device_torch)\n"
+        "            text_encoder[0].requires_grad_(False)\n"
+        "            text_encoder[0].eval()\n"
+        "            text_encoder[1].to(self.device_torch)\n"
+        "            text_encoder[1].requires_grad_(False)\n"
+        "            text_encoder[1].eval()\n"
+        + _mem("after text_encoder[0/1] redundant .to") +
+        "            pipe.transformer = pipe.transformer.to(self.device_torch)\n"
+        "            flush()\n"
+        + _mem("after 2nd redundant transformer.to (end of is_flux block)")
+    )
+    assert anchor_c in src, "patch_ai_toolkit_for_t4: anchor_c not found, upstream file changed"
+    src = src.replace(anchor_c, replacement_c, 1)
+
+    open(path, "w").write(src)
+    print("patched toolkit/stable_diffusion_model.py for T4 (transformer<->CPU swap around T5 load)")
+
+    # v18 (FLUX.1-dev, no assistant adapter) still OOMed ~24s after the
+    # is_flux block finished at a comfortable 9.56GB, with the exact same
+    # numbers as v17 (schnell+adapter) -- proving the adapter fusion was
+    # never the cause. jobs/process/BaseSDTrainProcess.py calls
+    # `unet.to(self.device_torch, dtype=dtype)` right after load_model()
+    # returns, explicitly casting the already-quantized transformer to
+    # bf16 -- if the quantized tensor type doesn't ignore dtype= casts,
+    # this dequantizes a frozen ~12B-param model back to full precision
+    # (~24GB), which is a plausible match for the spike. Patch: skip the
+    # dtype= kwarg (device-only move) when the model is quantized, plus a
+    # memory print right after so this either confirms the theory or rules
+    # it out with hard numbers instead of another guess.
+    path2 = os.path.join(AI_TOOLKIT_DIR, "jobs", "process", "BaseSDTrainProcess.py")
+    src2 = open(path2).read()
+    if "chowchow patch" in src2:
+        print("patch_ai_toolkit_for_t4: BaseSDTrainProcess.py already patched, skipping")
+        return
+    anchor_d = (
+        "        unet.to(self.device_torch, dtype=dtype)\n"
+        "        unet.requires_grad_(False)\n"
+        "        unet.eval()\n"
+    )
+    replacement_d = (
+        "        if self.model_config.quantize:\n"
+        "            unet.to(self.device_torch)"
+        "  # chowchow patch: skip dtype= cast, it would dequantize the frozen transformer back to bf16\n"
+        "        else:\n"
+        "            unet.to(self.device_torch, dtype=dtype)\n"
+        "        print(f'chowchow patch: after unet.to (quantize={self.model_config.quantize}) "
+        "mem_allocated={torch.cuda.memory_allocated()/1e9:.2f}GB "
+        "mem_reserved={torch.cuda.memory_reserved()/1e9:.2f}GB')\n"
+        "        unet.requires_grad_(False)\n"
+        "        unet.eval()\n"
+    )
+    assert anchor_d in src2, "patch_ai_toolkit_for_t4: anchor_d not found, upstream file changed"
+    src2 = src2.replace(anchor_d, replacement_d, 1)
+
+    # v19's unet.to fix only moved the needle 9.56GB -> 9.72GB (proving that
+    # line was NOT the multi-GB spike either) yet the run still OOMed at the
+    # exact same 14.5ish GB. The jump must be in LoRA network setup
+    # (self.network = NetworkClass(...) / apply_to) or dataset loading
+    # (get_dataloader_from_datasets, which triggers cache_latents_to_disk /
+    # cache_text_embeddings). Bracket both remaining candidates with memory
+    # prints instead of guessing a fourth time.
+    anchor_e = (
+        "                self.network.apply_to(\n"
+        "                    text_encoder,\n"
+        "                    unet,"
+    )
+    replacement_e = (
+        "                print(f'chowchow patch: before network.apply_to "
+        "mem_allocated={torch.cuda.memory_allocated()/1e9:.2f}GB "
+        "mem_reserved={torch.cuda.memory_reserved()/1e9:.2f}GB')\n"
+        "                self.network.apply_to(\n"
+        "                    text_encoder,\n"
+        "                    unet,"
+    )
+    assert anchor_e in src2, "patch_ai_toolkit_for_t4: anchor_e not found, upstream file changed"
+    src2 = src2.replace(anchor_e, replacement_e, 1)
+
+    anchor_f = (
+        "        # load datasets if passed in the root process\n"
+        "        if self.datasets is not None:\n"
+        "            self.data_loader = get_dataloader_from_datasets(self.datasets, self.train_config.batch_size, self.sd)\n"
+        "        if self.datasets_reg is not None:\n"
+        "            self.data_loader_reg = get_dataloader_from_datasets(self.datasets_reg, self.train_config.batch_size,\n"
+        "                                                                self.sd)\n"
+    )
+    replacement_f = (
+        "        print(f'chowchow patch: before dataloader/caching "
+        "mem_allocated={torch.cuda.memory_allocated()/1e9:.2f}GB "
+        "mem_reserved={torch.cuda.memory_reserved()/1e9:.2f}GB')\n"
+        "        # load datasets if passed in the root process\n"
+        "        if self.datasets is not None:\n"
+        "            self.data_loader = get_dataloader_from_datasets(self.datasets, self.train_config.batch_size, self.sd)\n"
+        "        if self.datasets_reg is not None:\n"
+        "            self.data_loader_reg = get_dataloader_from_datasets(self.datasets_reg, self.train_config.batch_size,\n"
+        "                                                                self.sd)\n"
+        "        print(f'chowchow patch: after dataloader/caching "
+        "mem_allocated={torch.cuda.memory_allocated()/1e9:.2f}GB "
+        "mem_reserved={torch.cuda.memory_reserved()/1e9:.2f}GB')\n"
+    )
+    assert anchor_f in src2, "patch_ai_toolkit_for_t4: anchor_f not found, upstream file changed"
+    src2 = src2.replace(anchor_f, replacement_f, 1)
+
+    open(path2, "w").write(src2)
+    print("patched jobs/process/BaseSDTrainProcess.py (skip dtype= cast on quantized unet.to)")
+
+
+def get_hf_token():
+    token_file = find_dir("/kaggle/input/**/chowchow-lora-hf-token*")
+    token_path = os.path.join(token_file, "hf_token.txt")
+    assert os.path.isfile(token_path), (
+        f"找不到 {token_path}。請確認 kernel-metadata.json 的 dataset_sources "
+        "裡有 danielyiyi/chowchow-lora-hf-token，且該 dataset 裡有 hf_token.txt。"
+    )
+    token = open(token_path).read().strip()
+    assert token, f"{token_path} 是空的。"
+    return token
+
+
+def main():
+    hf_token = get_hf_token()
+    os.environ["HF_TOKEN"] = hf_token
+    os.environ["HUGGING_FACE_HUB_TOKEN"] = hf_token
+    # Both spellings: PyTorch renamed this env var across versions, and the
+    # OOM traceback from the first real run named the old one explicitly.
+    # Direct assignment, not setdefault -- Kaggle's base image may already
+    # set one of these to something else, and a silent no-op here was likely
+    # why three straight runs OOMed on the exact same fragmented 28MB gap.
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+    os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
+    print(f"PYTORCH_CUDA_ALLOC_CONF={os.environ['PYTORCH_CUDA_ALLOC_CONF']!r}")
+
+    dataset_dir_readonly = find_dir("/kaggle/input/**/chowchow-mascot-lora-dataset*")
+    # /kaggle/input is read-only; ai-toolkit writes a .aitk_size.json cache
+    # file straight into folder_path, so it needs a writable copy.
+    dataset_dir = "/kaggle/working/chowchow-mascot-lora-dataset"
+    if not os.path.isdir(dataset_dir):
+        shutil.copytree(dataset_dir_readonly, dataset_dir)
+    print(f"dataset_dir = {dataset_dir} (writable copy of {dataset_dir_readonly})")
+
+    print(f"AI_TOOLKIT_DIR pre-existing = {os.path.isdir(AI_TOOLKIT_DIR)}")
+    if not os.path.isdir(AI_TOOLKIT_DIR):
+        run(["git", "clone", "https://github.com/ostris/ai-toolkit.git", AI_TOOLKIT_DIR])
+    else:
+        run(["git", "-C", AI_TOOLKIT_DIR, "log", "-1", "--format=already-cloned at commit %H %cd"])
+    patch_ai_toolkit_for_t4()
+    run([sys.executable, "-m", "pip", "install", "-r", "requirements.txt"], cwd=AI_TOOLKIT_DIR)
+
+    with open(CONFIG_PATH, "w") as f:
+        f.write(CONFIG_YAML.format(output_name=OUTPUT_NAME, dataset_dir=dataset_dir))
+
+    run([sys.executable, "run.py", CONFIG_PATH], cwd=AI_TOOLKIT_DIR)
+
+    out_dir = f"/kaggle/working/output/{OUTPUT_NAME}"
+    safetensors = sorted(
+        glob.glob(os.path.join(out_dir, "*.safetensors")),
+        key=os.path.getmtime,
+    )
+    assert safetensors, (
+        f"沒有找到訓練輸出的 .safetensors，目錄內容："
+        f"{os.listdir(out_dir) if os.path.isdir(out_dir) else 'MISSING'}"
+    )
+    shutil.copy(safetensors[-1], FINAL_SAFETENSORS)
+    print(f"已複製 {safetensors[-1]} -> {FINAL_SAFETENSORS}")
+
+
+if __name__ == "__main__":
+    main()

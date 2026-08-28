@@ -4,18 +4,21 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-# Add your project's own build/lint/type-check commands here as they exist.
-
-printf '[verify] unit tests\n'
-set +e
-PYTHONPATH="$ROOT_DIR" python3 -m unittest discover -s tests -p 'test_*.py' -v
-test_status=$?
-set -e
-# Python 3.12+ exits 5 for "no tests were collected" (e.g. a fresh skeleton
-# with no test_*.py yet); treat that as informational, not a failure.
-if [ "$test_status" -ne 0 ] && [ "$test_status" -ne 5 ]; then
-  exit "$test_status"
+VENV_PY="$ROOT_DIR/.venv/bin/python"
+if [ ! -x "$VENV_PY" ]; then
+  printf '[verify] .venv not found at %s\n' "$VENV_PY" >&2
+  printf '[verify] run: python3.12 -m venv .venv && .venv/bin/pip install -e ".[dev]"\n' >&2
+  exit 1
 fi
+
+printf '[verify] pytest\n'
+"$VENV_PY" -m pytest -q
+
+printf '[verify] ruff\n'
+"$VENV_PY" -m ruff check src tests
+
+printf '[verify] comfyui-assets validator\n'
+"$VENV_PY" comfyui-assets/scripts/validate_project.py
 
 printf '[verify] Git whitespace check\n'
 if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then

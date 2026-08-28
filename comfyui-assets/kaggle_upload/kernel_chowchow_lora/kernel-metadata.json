@@ -1,0 +1,16 @@
+{
+  "id": "danielyiyi/chowchow-mascot-lora-train",
+  "title": "chowchow mascot lora train",
+  "code_file": "kernel_entry_chowchow_lora.py",
+  "language": "python",
+  "kernel_type": "script",
+  "is_private": "true",
+  "enable_gpu": "true",
+  "enable_tpu": "false",
+  "enable_internet": "true",
+  "machine_shape": "NvidiaTeslaT4",
+  "dataset_sources": ["danielyiyi/chowchow-mascot-lora-dataset", "danielyiyi/chowchow-lora-hf-token"],
+  "competition_sources": [],
+  "kernel_sources": [],
+  "model_sources": []
+}

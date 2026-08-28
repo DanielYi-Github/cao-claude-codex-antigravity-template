@@ -1,0 +1,97 @@
+{
+  "1": {
+    "inputs": {
+      "file": "cafe-loop-wan22_00001_.mp4"
+    },
+    "class_type": "LoadVideo",
+    "_meta": {
+      "title": "載入影片"
+    }
+  },
+  "2": {
+    "inputs": {
+      "video": [
+        "1",
+        0
+      ]
+    },
+    "class_type": "GetVideoComponents",
+    "_meta": {
+      "title": "取得影片元件"
+    }
+  },
+  "3": {
+    "inputs": {
+      "model_name": "RealESRGAN_x4plus.pth"
+    },
+    "class_type": "UpscaleModelLoader",
+    "_meta": {
+      "title": "載入放大模型"
+    }
+  },
+  "4": {
+    "inputs": {
+      "upscale_model": [
+        "3",
+        0
+      ],
+      "image": [
+        "2",
+        0
+      ]
+    },
+    "class_type": "ImageUpscaleWithModel",
+    "_meta": {
+      "title": "圖片放大（使用模型）"
+    }
+  },
+  "5": {
+    "inputs": {
+      "upscale_method": "lanczos",
+      "width": 1920,
+      "height": 1080,
+      "crop": "disabled",
+      "image": [
+        "4",
+        0
+      ]
+    },
+    "class_type": "ImageScale",
+    "_meta": {
+      "title": "放大圖片"
+    }
+  },
+  "6": {
+    "inputs": {
+      "fps": 16,
+      "bit_depth": 8,
+      "images": [
+        "5",
+        0
+      ],
+      "audio": [
+        "2",
+        1
+      ]
+    },
+    "class_type": "CreateVideo",
+    "_meta": {
+      "title": "建立影片"
+    }
+  },
+  "7": {
+    "inputs": {
+      "filename_prefix": "video/cafe-loop-1080p",
+      "format": "auto",
+      "codec": "auto",
+      "video": [
+        "6",
+        0
+      ]
+    },
+    "class_type": "SaveVideo",
+    "_meta": {
+      "title": "儲存影片"
+    }
+  }
+}

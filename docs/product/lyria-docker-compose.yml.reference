@@ -1,0 +1,12 @@
+services:
+  lyria-auto:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./config:/app/config
+      - ./secrets:/app/secrets
+      - ./workspace:/app/workspace
+      - ./logs:/app/logs
+      - ./assets:/app/assets
+    command: ["lyria-auto", "scheduler"]

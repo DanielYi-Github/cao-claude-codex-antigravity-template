@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="utf-8">
+<title>Lyria Studio</title>
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<h1>Lyria Studio</h1>
+
+<section id="episode-list-view">
+  <div class="card">
+    <h2>建立新集數</h2>
+    <input id="newSlug" placeholder="slug，例如 chowchow-001">
+    <input id="newTitle" placeholder="標題">
+    <button id="createEpisode">建立</button>
+    <div id="createNotice" class="notice"></div>
+  </div>
+  <div class="card">
+    <h2>集數列表</h2>
+    <div id="episodeList"></div>
+  </div>
+</section>
+
+<section id="episode-detail-view" class="hidden">
+  <button id="backToList">← 回列表</button>
+  <h2 id="episodeTitle"></h2>
+  <div id="assetGroups"></div>
+</section>
+
+<div id="lightbox" class="lightbox hidden">
+  <img id="lightboxImg" alt="放大檢視">
+</div>
+
+<script src="/app.js"></script>
+</body>
+</html>
