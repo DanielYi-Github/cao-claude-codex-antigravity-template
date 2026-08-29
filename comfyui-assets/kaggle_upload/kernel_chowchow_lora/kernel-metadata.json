@@ -9,7 +9,7 @@
   "enable_tpu": false,
   "enable_internet": true,
   "machine_shape": "NvidiaTeslaT4",
-  "dataset_sources": ["danielyiyi/chowchow-mascot-lora-dataset", "danielyiyi/chowchow-lora-hf-token"],
+  "dataset_sources": ["danielyiyi/chowchow-mascot-lora-dataset-v2", "danielyiyi/chowchow-lora-hf-token"],
   "competition_sources": [],
   "kernel_sources": [],
   "model_sources": []
