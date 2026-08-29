@@ -47,6 +47,32 @@ T4 只有 16GB VRAM，`patch_ai_toolkit_for_t4()` 修了三個 ai-toolkit 本身
 4-bit，換取足夠的顯存餘裕），畫質可能受影響，等真的跑出結果再評估。
 `model.te_device` 這個設定經查證是 flux2/wan21 等新架構才有接上的死設定，
 對這裡的 FLUX.1 完全沒用，沒有採用。
+
+4. **v21-v23 三次都在 `cache_text_embeddings()` 第一次 T5 forward 時，以
+   完全相同的方式 OOM（80MiB 差、mem_allocated 14.29GB）**：拿到 v23 的
+   完整 traceback 後，加上 Codex（透過 CAO 派工讀原始碼）跟顧問
+   （advisor）的協助，才確認真正原因——T5 確實有量化成功（log 裡沒有任何
+   `Failed to quantize` 訊息），也確實走的是 ai-toolkit 自己的 UIntX
+   量化器（不是 optimum-quanto，`qtype_te="uint4"` 這個字串本來就不會解析
+   成 quanto 的型別，網路上關於 quanto 在 Turing/T4 退回慢速解量化的說法
+   在這裡不適用）。真正問題出在 `toolkit/util/uintx_quant.py` 的
+   `forward()`：
+     with torch.no_grad():
+         w = self._dequantize_native(module)
+     return torch.nn.functional.linear(x, w, module.bias)  # 在 no_grad 外面
+   解量化本身包在 `no_grad` 裡，但呼叫 `linear()` 沒有。只要外層的 forward
+   呼叫鏈（`encode_prompts_flux()`）本身不是在 `no_grad` 底下跑，autograd
+   就會建圖、把每一層解量化出來的全精度權重存起來準備反向傳播——T5-XXL
+   24 層，每層 attn(4×16.8M) + FFN(3×41.9M) ≈ 193M 參數、386MB（bf16），
+   24 層加總 ≈ 9.26GB，跟量到的落差（3.22GB 進場、OOM 前 14.29GB）幾乎
+   完全對得上，連炸掉時要求的 80MiB 都正好等於一個 wi_0 矩陣的大小。這個
+   forward 只在「幫 caption 建快取」跟「產生預覽圖」這兩個不需要反向傳播
+   的地方被呼叫（訓練設定裡 `train_text_encoder: false`，log 也印出
+   `create LoRA for Text Encoder: 0 modules`），所以在 `encode_prompts_flux`
+   外面包一層 `@torch.no_grad()` 是安全的——修在這裡而不是修
+   `uintx_quant.py` 的 `linear()` 本身，是因為那裡是量化器的通用路徑，
+   訓練時梯度需要真的穿過凍結的量化層才能傳到上游的 LoRA adapter，把那裡
+   包死會直接讓訓練本身壞掉。
 """
 import glob
 import os
@@ -153,6 +179,8 @@ def patch_ai_toolkit_for_t4():
     """
     _patch_stable_diffusion_model()
     _patch_base_sd_train_process()
+    _patch_dataloader_mixins()
+    _patch_train_tools()
 
 
 def _patch_stable_diffusion_model():
@@ -391,12 +419,31 @@ def _patch_base_sd_train_process():
         "        print(f'chowchow patch: before dataloader/caching "
         "mem_allocated={torch.cuda.memory_allocated()/1e9:.2f}GB "
         "mem_reserved={torch.cuda.memory_reserved()/1e9:.2f}GB')\n"
+        # v20: the previous run's log shows this block reaching 9.73GB
+        # allocated right before it, then OOMing 80MB short of the 14.56GB T4
+        # limit inside cache_text_embeddings()'s first T5 forward pass. Only
+        # the VAE (latents) and T5 (text embeddings) are needed for caching --
+        # the 12B-param transformer sitting resident on GPU the whole time is
+        # pure waste here. Same CPU-swap trick as the T5-quantization patch
+        # above, just applied to this window instead.\n"
+        "        self.sd.unet.to('cpu')  # chowchow patch: not needed for VAE/T5 caching\n"
+        "        flush()\n"
+        # v21's crash had the exact same 14.29GB allocated at OOM time as the
+        # unpatched v20 run -- the .to('cpu') above may not be freeing what we
+        # think it is (accelerate-wrapped module, or the caching allocator
+        # just isn't giving it back). Print right here, immediately after the
+        # move, instead of assuming it worked.\n"
+        "        print(f'chowchow patch: after unet.to(cpu) "
+        "mem_allocated={torch.cuda.memory_allocated()/1e9:.2f}GB "
+        "mem_reserved={torch.cuda.memory_reserved()/1e9:.2f}GB')\n"
         "        # load datasets if passed in the root process\n"
         "        if self.datasets is not None:\n"
         "            self.data_loader = get_dataloader_from_datasets(self.datasets, self.train_config.batch_size, self.sd)\n"
         "        if self.datasets_reg is not None:\n"
         "            self.data_loader_reg = get_dataloader_from_datasets(self.datasets_reg, self.train_config.batch_size,\n"
         "                                                                self.sd)\n"
+        "        self.sd.unet.to(self.device_torch)  # chowchow patch: bring it back for training\n"
+        "        flush()\n"
         "        print(f'chowchow patch: after dataloader/caching "
         "mem_allocated={torch.cuda.memory_allocated()/1e9:.2f}GB "
         "mem_reserved={torch.cuda.memory_reserved()/1e9:.2f}GB')\n"
@@ -407,6 +454,138 @@ def _patch_base_sd_train_process():
     with open(path2, "w") as f:
         f.write(src2)
     print("patched jobs/process/BaseSDTrainProcess.py (skip dtype= cast on quantized unet.to)")
+
+
+def _patch_dataloader_mixins():
+    """v20-v22 all OOM ~80MB short, at the exact same spot, with the exact
+    same ~14.29GB allocated -- inside cache_text_embeddings()'s first T5
+    forward pass, even with the transformer confirmed offloaded to CPU
+    (v22's diagnostic print showed 3.21GB right before this function runs).
+    ai-toolkit's own set_device_state_preset('cache_latents') /
+    ('cache_text_encoder') machinery already tries to keep unused modules on
+    CPU during each caching phase, so the transformer isn't the leak here --
+    something inside VAE latent caching (which runs immediately before this
+    function, moving the VAE onto GPU) isn't being released before T5's
+    memory-hungry per-layer dequantization starts. A flush() at the top of
+    cache_text_embeddings() is the cheap thing to try before something more
+    invasive; the added print gives real numbers instead of another guess if
+    this alone isn't enough.
+    """
+    path = os.path.join(AI_TOOLKIT_DIR, "toolkit", "dataloader_mixins.py")
+    with open(path) as f:
+        src = f.read()
+    if "chowchow patch" in src:
+        print("patch_ai_toolkit_for_t4: dataloader_mixins.py already patched, skipping")
+        return
+
+    anchor = (
+        "    def cache_text_embeddings(self: 'AiToolkitDataset'):\n"
+        "        with accelerator.main_process_first():\n"
+        "            print_acc(f\"Caching text_embeddings for {self.dataset_path}\")\n"
+    )
+    replacement = (
+        "    def cache_text_embeddings(self: 'AiToolkitDataset'):\n"
+        "        flush()  # chowchow patch: reclaim whatever cache_latents_to_disk left behind\n"
+        "        print(f'chowchow patch: at start of cache_text_embeddings "
+        "mem_allocated={torch.cuda.memory_allocated()/1e9:.2f}GB "
+        "mem_reserved={torch.cuda.memory_reserved()/1e9:.2f}GB')\n"
+        "        with accelerator.main_process_first():\n"
+        "            print_acc(f\"Caching text_embeddings for {self.dataset_path}\")\n"
+    )
+    assert anchor in src, "_patch_dataloader_mixins: anchor not found, upstream file changed"
+    src = src.replace(anchor, replacement, 1)
+
+    # v23's full traceback + Codex's read of set_device_state_preset pointed at
+    # this onload as a possible second contributor (T5 moving CPU->GPU right
+    # before the forward pass that OOMs). The @torch.no_grad() fix in
+    # _patch_train_tools() is the primary suspect (see point 4 in the module
+    # docstring), but this print costs nothing and settles whether T5's
+    # quantized buffers were already resident (cheap) or this move itself is
+    # unexpectedly large, without guessing a fifth time.
+    anchor_g = (
+        "                    if not did_move:\n"
+        "                        self.sd.set_device_state_preset('cache_text_encoder')\n"
+        "                        did_move = True\n"
+    )
+    replacement_g = (
+        "                    if not did_move:\n"
+        "                        self.sd.set_device_state_preset('cache_text_encoder')\n"
+        "                        did_move = True\n"
+        "                        print(f'chowchow patch: after cache_text_encoder preset "
+        "mem_allocated={torch.cuda.memory_allocated()/1e9:.2f}GB "
+        "mem_reserved={torch.cuda.memory_reserved()/1e9:.2f}GB "
+        "te1_device={next(self.sd.text_encoder[1].parameters()).device} "
+        "te1_requires_grad={any(p.requires_grad for p in self.sd.text_encoder[1].parameters())}')\n"
+    )
+    assert anchor_g in src, "_patch_dataloader_mixins: anchor_g not found, upstream file changed"
+    src = src.replace(anchor_g, replacement_g, 1)
+
+    with open(path, "w") as f:
+        f.write(src)
+    print("patched toolkit/dataloader_mixins.py (flush + memory prints before/around text-embedding caching)")
+
+
+def _patch_train_tools():
+    """The actual fix (see module docstring point 4): OstrisLinear.forward()
+    in uintx_quant.py already wraps its dequantization in torch.no_grad(),
+    but the F.linear() matmul that consumes the dequantized weight is NOT
+    inside that no_grad block. If the outer call chain isn't under no_grad
+    either, autograd builds a graph and MmBackward retains every
+    dequantized T5 linear weight for the whole forward pass -- 24 blocks x
+    ~386MB (bf16) = ~9.26GB, which matches the observed 3.22GB->14.29GB
+    jump almost exactly, and the 80MiB failing allocation matches one
+    wi_0 tensor. encode_prompts_flux() (called for both CLIP and T5) is
+    never on a path that needs gradients in this run -- caption embeddings
+    are cached to disk once and read back during training, and
+    train_text_encoder is false -- so wrapping it in torch.no_grad() is
+    safe here without touching the quantizer's own generic forward().
+    """
+    path = os.path.join(AI_TOOLKIT_DIR, "toolkit", "train_tools.py")
+    with open(path) as f:
+        src = f.read()
+    if "chowchow patch" in src:
+        print("patch_ai_toolkit_for_t4: train_tools.py already patched, skipping")
+        return
+
+    anchor = (
+        "def encode_prompts_flux(\n"
+        "        tokenizer: List[Union['CLIPTokenizer','T5Tokenizer']],\n"
+        "        text_encoder: List[Union['CLIPTextModel', 'T5EncoderModel']],\n"
+    )
+    replacement = (
+        "@torch.no_grad()  # chowchow patch: caching never needs a live autograd\n"
+        "# graph through frozen CLIP/T5; without this every dequantized T5 linear\n"
+        "# weight is retained for the whole forward (see module docstring point 4)\n"
+        "def encode_prompts_flux(\n"
+        "        tokenizer: List[Union['CLIPTokenizer','T5Tokenizer']],\n"
+        "        text_encoder: List[Union['CLIPTextModel', 'T5EncoderModel']],\n"
+    )
+    assert anchor in src, "_patch_train_tools: anchor not found, upstream file changed"
+    src = src.replace(anchor, replacement, 1)
+
+    anchor_t5_call = (
+        "    text_input_ids = text_inputs.input_ids\n"
+        "\n"
+        "    prompt_embeds = text_encoder[1](text_input_ids.to(device), output_hidden_states=False)[0]\n"
+    )
+    replacement_t5_call = (
+        "    text_input_ids = text_inputs.input_ids\n"
+        "\n"
+        "    print(f'chowchow patch: before T5 forward "
+        "mem_allocated={torch.cuda.memory_allocated()/1e9:.2f}GB "
+        "te1_requires_grad={any(p.requires_grad for p in text_encoder[1].parameters())} "
+        "no_grad_active={not torch.is_grad_enabled()}')\n"
+        "    prompt_embeds = text_encoder[1](text_input_ids.to(device), output_hidden_states=False)[0]\n"
+        "    print(f'chowchow patch: after T5 forward "
+        "mem_allocated={torch.cuda.memory_allocated()/1e9:.2f}GB "
+        "prompt_embeds_requires_grad={prompt_embeds.requires_grad}')\n"
+    )
+    assert anchor_t5_call in src, "_patch_train_tools: anchor_t5_call not found, upstream file changed"
+    src = src.replace(anchor_t5_call, replacement_t5_call, 1)
+
+    with open(path, "w") as f:
+        f.write(src)
+    print("patched toolkit/train_tools.py (@torch.no_grad() on encode_prompts_flux + memory prints)")
 
 
 def get_hf_token():
