@@ -476,3 +476,70 @@ def test_migration_failure_rolls_back_atomically(tmp_path, monkeypatch):
     applied = {r[0] for r in check.execute("SELECT id FROM schema_migrations")}
     assert "0003_studio_production" not in applied
     check.close()
+
+
+def test_cancel_tasks_fails_a_running_task_and_its_running_asset(tmp_path):
+    db = StateDB(tmp_path / "state.sqlite3")
+    episode_id = db.create_episode("chowchow-001", "第一集")
+    asset_id = db.create_asset(episode_id, "motion_test", "sleep")
+    task_id = db.enqueue_task(episode_id, "generate_motion_test", asset_id=asset_id)
+    db.claim_next_task()
+    db.transition_asset(asset_id, expected_status="queued", expected_version=0, status="running")
+
+    cancelled = db.cancel_tasks(episode_id, {"generate_motion_test"}, error="使用者手動終止生成")
+
+    assert cancelled == 1
+    assert db.task(task_id)["status"] == "failed"
+    assert db.task(task_id)["error"] == "使用者手動終止生成"
+    assert db.asset(asset_id)["status"] == "failed"
+    assert db.asset(asset_id)["error"] == "使用者手動終止生成"
+
+
+def test_cancel_tasks_fails_a_queued_task_and_its_queued_asset(tmp_path):
+    """Unlike recover_stale_tasks (crash recovery, only ever touches
+    'running'), a user-initiated cancel must also handle a task that was
+    never claimed -- its asset is still 'queued', not 'running'."""
+    db = StateDB(tmp_path / "state.sqlite3")
+    episode_id = db.create_episode("chowchow-001", "第一集")
+    asset_id = db.create_asset(episode_id, "motion_test", "lookup")
+    task_id = db.enqueue_task(episode_id, "generate_motion_test", asset_id=asset_id)
+
+    cancelled = db.cancel_tasks(episode_id, {"generate_motion_test"}, error="stop")
+
+    assert cancelled == 1
+    assert db.task(task_id)["status"] == "failed"
+    assert db.asset(asset_id)["status"] == "failed"
+
+
+def test_cancel_tasks_handles_a_self_creating_task_with_no_asset_id(tmp_path):
+    db = StateDB(tmp_path / "state.sqlite3")
+    episode_id = db.create_episode("chowchow-001", "第一集")
+    task_id = db.enqueue_task(episode_id, "generate_keyframe")
+    db.claim_next_task()
+
+    cancelled = db.cancel_tasks(episode_id, {"generate_keyframe"}, error="stop")
+
+    assert cancelled == 1
+    assert db.task(task_id)["status"] == "failed"
+
+
+def test_cancel_tasks_ignores_other_task_types_and_already_finished_tasks(tmp_path):
+    db = StateDB(tmp_path / "state.sqlite3")
+    episode_id = db.create_episode("chowchow-001", "第一集")
+    keyframe_task = db.enqueue_task(episode_id, "generate_keyframe")
+    motion_asset = db.create_asset(episode_id, "motion_test", "sleep")
+    motion_task = db.enqueue_task(episode_id, "generate_motion_test", asset_id=motion_asset)
+    db.finish_task(motion_task, status="done")
+
+    cancelled = db.cancel_tasks(episode_id, {"generate_motion_test"}, error="stop")
+
+    assert cancelled == 0
+    assert db.task(keyframe_task)["status"] == "queued", "wrong task_type, must not touch it"
+    assert db.task(motion_task)["status"] == "done", "already finished, must not touch it"
+
+
+def test_cancel_tasks_returns_zero_when_nothing_matches(tmp_path):
+    db = StateDB(tmp_path / "state.sqlite3")
+    episode_id = db.create_episode("chowchow-001", "第一集")
+
+    assert db.cancel_tasks(episode_id, {"generate_keyframe"}, error="stop") == 0

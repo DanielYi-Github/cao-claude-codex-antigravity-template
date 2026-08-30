@@ -50,8 +50,18 @@
         <label for="negPrompt">負向提示詞 (Negative Prompt):</label>
         <textarea id="negPrompt" rows="2"></textarea>
       </div>
+      <div class="form-group">
+        <span id="batchSizeLabel">生成張數 (Batch Size):</span>
+        <div class="batch-size-group" role="group" aria-labelledby="batchSizeLabel">
+          <button type="button" class="batch-size-btn" data-size="2">2 張</button>
+          <button type="button" class="batch-size-btn" data-size="4">4 張</button>
+          <button type="button" class="batch-size-btn" data-size="8">8 張</button>
+          <button type="button" class="batch-size-btn" data-size="12">12 張</button>
+        </div>
+      </div>
       <button id="generateKeyframes">Generate</button>
       <button id="regenerateKeyframes" class="hidden">Regenerate All</button>
+      <button id="cancelKeyframes" class="stop-btn hidden">終止 (Stop)</button>
       <div id="keyframeStatus" class="notice" aria-live="polite"></div>
     </div>
 

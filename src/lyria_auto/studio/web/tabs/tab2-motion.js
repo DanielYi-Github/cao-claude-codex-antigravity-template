@@ -25,6 +25,7 @@ function ensureTabScaffold(ctx) {
       <div class="card">
         <h3>2. 動作生成與審核 (Motion Test)</h3>
         <p class="muted">檢視 8 秒睡眠 (Sleep) 與抬頭 (Lookup) 動作片段。兩者皆核准後，方可組裝 64 秒低解析度預覽。</p>
+        <button id="cancelMotion" class="stop-btn hidden">終止 (Stop)</button>
         <div id="motionStatus" class="notice" aria-live="polite"></div>
         <div id="motion-players" class="motion-grid"></div>
       </div>
@@ -107,6 +108,11 @@ export function renderMotionTab(data, ctx) {
     motionStatusEl.textContent = motionStatusText;
   }
 
+  // Only offer Stop while something's actually running -- there's nothing
+  // to cancel otherwise.
+  const cancelBtn = $('#cancelMotion');
+  if (cancelBtn) cancelBtn.classList.toggle('hidden', !isGeneratingMotion);
+
   // 2. Render Motion Players Grid
   const playersContainer = $('#motion-players');
   if (playersContainer) {
@@ -134,6 +140,12 @@ export function renderMotionTab(data, ctx) {
       const isAwaiting = asset.status === 'awaiting_review';
       const isQueuedOrRunning = ['queued', 'running'].includes(asset.status);
       const isRejected = asset.status === 'rejected';
+      // A cancelled-mid-generation asset lands here too (cancel_motion_
+      // generation in app.py transitions it to 'failed') -- the backend's
+      // reject endpoint accepts 'failed' the same as 'awaiting_review', so
+      // Regenerate needs to be offered here too, not just for a completed
+      // batch the reviewer didn't like.
+      const isFailed = asset.status === 'failed';
       const errorHtml = asset.error ? `<p class="error">${escapeHtml(asset.error)}</p>` : '';
 
       let mediaHtml = '';
@@ -144,9 +156,9 @@ export function renderMotionTab(data, ctx) {
       }
 
       let actionsHtml = '';
-      if (isAwaiting) {
+      if (isAwaiting || isFailed) {
         actionsHtml = `
-          <button class="btn approve-btn motion-approve-btn" data-id="${asset.id}" data-version="${asset.state_version}">核准此動作</button>
+          ${isAwaiting ? `<button class="btn approve-btn motion-approve-btn" data-id="${asset.id}" data-version="${asset.state_version}">核准此動作</button>` : ''}
           <button class="btn reject motion-reject-btn" data-id="${asset.id}" data-version="${asset.state_version}" data-role="${role}">重新生成 (Regenerate)</button>
         `;
       } else if (isApproved) {
@@ -160,7 +172,7 @@ export function renderMotionTab(data, ctx) {
       }
 
       return `
-        <div class="motion-card ${isApproved ? 'approved' : ''} ${isRejected ? 'rejected' : ''}">
+        <div class="motion-card ${isApproved ? 'approved' : ''} ${isRejected || isFailed ? 'rejected' : ''}">
           <div class="motion-meta">
             <span class="motion-title">${escapeHtml(title)}</span>
             <div>
@@ -288,6 +300,29 @@ export function bindMotionTab(ctx) {
   const btn = $('#assemblePreview');
   if (btn) {
     btn.onclick = () => assemblePreview(ctx);
+  }
+  const cancelBtn = $('#cancelMotion');
+  if (cancelBtn) {
+    cancelBtn.onclick = () => cancelMotion(ctx);
+  }
+}
+
+async function cancelMotion(ctx) {
+  const { $, api, getEpisodeId, refresh } = ctx;
+  const episodeId = getEpisodeId();
+  if (!episodeId) return;
+  const btn = $('#cancelMotion');
+  const statusEl = $('#motionStatus');
+  try {
+    if (btn) btn.disabled = true;
+    if (statusEl) statusEl.textContent = '正在終止...';
+    await api(`/api/episodes/${episodeId}/motion/cancel`, { method: 'POST' });
+    await refresh();
+  } catch (err) {
+    alert(err.message);
+    await refresh();
+  } finally {
+    if (btn) btn.disabled = false;
   }
 }
 

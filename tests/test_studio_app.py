@@ -1,18 +1,37 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 from fastapi.testclient import TestClient
 
+from lyria_auto.config import AppConfig
 from lyria_auto.db import StateDB
 from lyria_auto.studio.app import create_app
 from lyria_auto.studio.stages import DEFAULT_KEYFRAME_PROMPT, KEYFRAME_NEGATIVE_PROMPT
 from lyria_auto.studio.worker import StudioWorker
 
 
-def _client(tmp_path):
+class _FakeComfyUIClient:
+    """Only implements what app.py actually calls on local_comfyui --
+    interrupt(), for the two Stop buttons. Duck-typed rather than a real
+    ComfyUIClient pointed at an unreachable URL so cancel tests can assert
+    it was actually called, not just that it silently failed to connect."""
+
+    def __init__(self) -> None:
+        self.interrupt_count = 0
+
+    def interrupt(self) -> None:
+        self.interrupt_count += 1
+
+
+def _client(tmp_path, *, keyframe_batch_size: int = 12, comfyui: Any = None):
     db = StateDB(tmp_path / "state.sqlite3")
-    app = create_app(db)
+    config = AppConfig(
+        settings={"studio": {"keyframe_batch_size": keyframe_batch_size}},
+        prompts={}, channels={}, root=tmp_path,
+    )
+    app = create_app(db, config, comfyui or _FakeComfyUIClient())
     return db, TestClient(app)
 
 
@@ -39,7 +58,7 @@ def test_generate_keyframes_enqueues_one_task_with_the_prompt_in_its_payload(tmp
 
     resp = client.post(
         f"/api/episodes/{episode['id']}/keyframes/generate",
-        json={"positive_prompt": "rainy cafe", "negative_prompt": "no people"},
+        json={"positive_prompt": "rainy cafe", "negative_prompt": "no people", "batch_size": 4},
     )
 
     assert resp.status_code == 200, resp.text
@@ -49,16 +68,16 @@ def test_generate_keyframes_enqueues_one_task_with_the_prompt_in_its_payload(tmp
     assert tasks[0]["task_type"] == "generate_keyframe"
     assert tasks[0]["asset_id"] is None
     payload = json.loads(tasks[0]["payload_json"])
-    assert payload == {"positive_prompt": "rainy cafe", "negative_prompt": "no people"}
+    assert payload == {"positive_prompt": "rainy cafe", "negative_prompt": "no people", "batch_size": 4}
 
 
 def test_generate_keyframes_with_no_prompt_still_enqueues_a_task(tmp_path):
-    """Omitted prompts aren't an error -- the endpoint resolves them to the
-    same DEFAULT_KEYFRAME_PROMPT/KEYFRAME_NEGATIVE_PROMPT the handler would
-    fall back to anyway, and always persists the concrete values (never
-    null) so the frontend can show/pre-fill "what actually generated these
-    candidates" even for a default-prompt batch."""
-    db, client = _client(tmp_path)
+    """Omitted prompts/batch_size aren't an error -- the endpoint resolves
+    them to the same defaults the handler would fall back to anyway, and
+    always persists the concrete values (never null) so the frontend can
+    show/pre-fill "what actually generated these candidates" even for a
+    default batch."""
+    db, client = _client(tmp_path, keyframe_batch_size=12)
     episode = client.post("/api/episodes", json={"slug": "e", "title": "E"}).json()
 
     resp = client.post(f"/api/episodes/{episode['id']}/keyframes/generate", json={})
@@ -70,16 +89,120 @@ def test_generate_keyframes_with_no_prompt_still_enqueues_a_task(tmp_path):
     assert payload == {
         "positive_prompt": DEFAULT_KEYFRAME_PROMPT,
         "negative_prompt": KEYFRAME_NEGATIVE_PROMPT,
+        "batch_size": 12,
     }
+
+
+def test_generate_keyframes_rejects_a_non_positive_batch_size(tmp_path):
+    db, client = _client(tmp_path)
+    episode = client.post("/api/episodes", json={"slug": "e", "title": "E"}).json()
+
+    resp = client.post(
+        f"/api/episodes/{episode['id']}/keyframes/generate", json={"batch_size": 0}
+    )
+
+    assert resp.status_code == 400
+    assert db.tasks_for_episode(episode["id"]) == []
+
+
+def test_cancel_keyframe_generation_interrupts_comfyui_and_fails_the_task(tmp_path):
+    comfyui = _FakeComfyUIClient()
+    db, client = _client(tmp_path, comfyui=comfyui)
+    episode = client.post("/api/episodes", json={"slug": "e", "title": "E"}).json()
+    client.post(f"/api/episodes/{episode['id']}/keyframes/generate", json={})
+    task_id = db.tasks_for_episode(episode["id"])[0]["id"]
+
+    resp = client.post(f"/api/episodes/{episode['id']}/keyframes/cancel")
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"cancelled": 1}
+    assert comfyui.interrupt_count == 1
+    assert db.task(task_id)["status"] == "failed"
+
+    # The in-flight guard is now clear -- a fresh Generate must succeed
+    # immediately, not 409 on a task that's actually dead.
+    retry = client.post(
+        f"/api/episodes/{episode['id']}/keyframes/generate",
+        json={"positive_prompt": "corrected prompt"},
+    )
+    assert retry.status_code == 200, retry.text
+
+
+def test_cancel_motion_generation_interrupts_comfyui_and_lets_reject_pick_it_back_up(tmp_path):
+    comfyui = _FakeComfyUIClient()
+    db, client = _client(tmp_path, comfyui=comfyui)
+    episode = client.post("/api/episodes", json={"slug": "e", "title": "E"}).json()
+    sleep_id = db.create_asset(episode["id"], "motion_test", "sleep")
+    db.enqueue_task(episode["id"], "generate_motion_test", asset_id=sleep_id)
+    db.claim_next_task()
+    db.transition_asset(sleep_id, expected_status="queued", expected_version=0, status="running")
+
+    resp = client.post(f"/api/episodes/{episode['id']}/motion/cancel")
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"cancelled": 1}
+    assert comfyui.interrupt_count == 1
+    assert db.asset(sleep_id)["status"] == "failed"
+
+    # A cancelled-mid-generation asset must not be a dead end -- the
+    # reviewer needs to be able to hit Regenerate with a corrected prompt
+    # immediately, the same as they could for an awaiting_review asset.
+    reject_resp = client.post(
+        f"/api/episodes/{episode['id']}/assets/{sleep_id}/reject",
+        json={"expected_version": 2, "reason": "cancelled", "new_prompt": "fixed prompt"},
+    )
+    assert reject_resp.status_code == 200, reject_resp.text
+    assert reject_resp.json()["requeued"]["source_prompt"] == "fixed prompt"
+
+
+def test_cancel_motion_generation_also_clears_a_queued_sibling(tmp_path):
+    """Stopping tab 2 must stop the whole in-flight batch, not just
+    whichever single task ComfyUI happened to be executing -- otherwise the
+    worker picks the queued one up right after and the reviewer is
+    surprised by generation continuing anyway."""
+    comfyui = _FakeComfyUIClient()
+    db, client = _client(tmp_path, comfyui=comfyui)
+    episode = client.post("/api/episodes", json={"slug": "e", "title": "E"}).json()
+    sleep_id = db.create_asset(episode["id"], "motion_test", "sleep")
+    db.enqueue_task(episode["id"], "generate_motion_test", asset_id=sleep_id)
+    db.claim_next_task()
+    db.transition_asset(sleep_id, expected_status="queued", expected_version=0, status="running")
+    lookup_id = db.create_asset(episode["id"], "motion_test", "lookup")
+    lookup_task = db.enqueue_task(episode["id"], "generate_motion_test", asset_id=lookup_id)
+
+    resp = client.post(f"/api/episodes/{episode['id']}/motion/cancel")
+
+    assert resp.json() == {"cancelled": 2}
+    assert db.task(lookup_task)["status"] == "failed"
+    assert db.asset(lookup_id)["status"] == "failed"
+
+
+def test_rejecting_a_failed_asset_requeues_it_the_same_as_awaiting_review(tmp_path):
+    db, client = _client(tmp_path)
+    episode = client.post("/api/episodes", json={"slug": "e", "title": "E"}).json()
+    motion_id = db.create_asset(episode["id"], "motion_test", "sleep")
+    db.transition_asset(
+        motion_id, expected_status="queued", expected_version=0,
+        status="failed", error="ComfyUI 生成失敗",
+    )
+
+    resp = client.post(
+        f"/api/episodes/{episode['id']}/assets/{motion_id}/reject",
+        json={"expected_version": 1, "reason": "retry", "new_prompt": "brighter lighting"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["rejected"]["status"] == "rejected"
+    assert resp.json()["requeued"]["source_prompt"] == "brighter lighting"
 
 
 def test_keyframe_defaults_endpoint_returns_the_same_constants_generate_falls_back_to(tmp_path):
     """A brand-new episode has no generate_keyframe task yet, so tab 1's
-    prompt boxes have no payload_json to pre-fill from -- this is the
-    endpoint the frontend calls instead so the boxes show something before
-    the first Generate click (user-reported gap, 2026-08-31). Not episode-
-    scoped, so no episode needs to exist to call it."""
-    _db, client = _client(tmp_path)
+    prompt boxes/batch-size buttons have no payload_json to pre-fill from --
+    this is the endpoint the frontend calls instead so there's something to
+    show before the first Generate click (user-reported gap, 2026-08-31).
+    Not episode-scoped, so no episode needs to exist to call it."""
+    _db, client = _client(tmp_path, keyframe_batch_size=8)
 
     resp = client.get("/api/keyframes/defaults")
 
@@ -87,6 +210,7 @@ def test_keyframe_defaults_endpoint_returns_the_same_constants_generate_falls_ba
     assert resp.json() == {
         "positive_prompt": DEFAULT_KEYFRAME_PROMPT,
         "negative_prompt": KEYFRAME_NEGATIVE_PROMPT,
+        "batch_size": 8,
     }
 
 

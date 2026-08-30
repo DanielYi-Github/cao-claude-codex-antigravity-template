@@ -86,6 +86,7 @@ async function openEpisode(episodeId) {
   $('#posPrompt').value = '';
   $('#negPrompt').value = '';
   $('#keyframeStatus').textContent = '';
+  $$('.batch-size-btn').forEach(b => b.classList.remove('active'));
 
   await renderEpisode(episodeId);
   stopPolling();

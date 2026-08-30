@@ -20,7 +20,9 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from ..config import AppConfig
 from ..db import StateDB
+from ..providers.comfyui import ComfyUIClient
 from .stages import DEFAULT_KEYFRAME_PROMPT, KEYFRAME_NEGATIVE_PROMPT
 
 WEB_ROOT = Path(__file__).resolve().parent / "web"
@@ -62,6 +64,7 @@ class CreateEpisodeRequest(BaseModel):
 class GenerateKeyframesRequest(BaseModel):
     positive_prompt: str | None = None
     negative_prompt: str | None = None
+    batch_size: int | None = None
 
 
 class ApproveRequest(BaseModel):
@@ -74,7 +77,7 @@ class RejectRequest(BaseModel):
     new_prompt: str | None = None
 
 
-def create_app(db: StateDB) -> FastAPI:
+def create_app(db: StateDB, config: AppConfig, local_comfyui: ComfyUIClient) -> FastAPI:
     app = FastAPI(title="Lyria Studio")
 
     def _asset_in_episode(episode_id: int, asset_id: int) -> Any:
@@ -148,19 +151,20 @@ def create_app(db: StateDB) -> FastAPI:
         return dict(db.episode(episode_id))
 
     @app.get("/api/keyframes/defaults")
-    def keyframe_defaults() -> dict[str, str]:
-        """What tab 1's prompt boxes pre-fill with before the reviewer has
-        ever clicked Generate for an episode -- at that point there's no
-        generate_keyframe task yet to read a payload_json off of (the
-        mechanism the frontend otherwise uses to show "what actually
-        produced these candidates"), so without this the boxes just stay
-        blank on a brand-new episode with nothing to edit before the first
-        click. Not episode-scoped: these are the same two module-level
-        constants generate_keyframes() below falls back to.
+    def keyframe_defaults() -> dict[str, Any]:
+        """What tab 1 pre-fills with before the reviewer has ever clicked
+        Generate for an episode -- at that point there's no generate_
+        keyframe task yet to read a payload_json off of (the mechanism the
+        frontend otherwise uses to show "what actually produced these
+        candidates"), so without this the boxes/controls just stay blank
+        on a brand-new episode with nothing to edit before the first
+        click. Not episode-scoped: these are the same values generate_
+        keyframes() below falls back to.
         """
         return {
             "positive_prompt": DEFAULT_KEYFRAME_PROMPT,
             "negative_prompt": KEYFRAME_NEGATIVE_PROMPT,
+            "batch_size": config.section("studio").get("keyframe_batch_size", 12),
         }
 
     @app.post("/api/episodes/{episode_id}/keyframes/generate")
@@ -175,6 +179,8 @@ def create_app(db: StateDB) -> FastAPI:
         episode = db.episode(episode_id)
         if episode is None:
             raise HTTPException(404, "episode not found")
+        if body.batch_size is not None and body.batch_size <= 0:
+            raise HTTPException(400, f"batch_size must be positive, got {body.batch_size}")
         existing = db.assets_for_episode(episode_id)
         if any(a["kind"] == "keyframe" and a["status"] == "approved" for a in existing):
             # Without this, "Regenerate All" after a pick would supersede
@@ -212,11 +218,35 @@ def create_app(db: StateDB) -> FastAPI:
         payload: dict[str, Any] = {
             "positive_prompt": body.positive_prompt or DEFAULT_KEYFRAME_PROMPT,
             "negative_prompt": body.negative_prompt or KEYFRAME_NEGATIVE_PROMPT,
+            "batch_size": body.batch_size or config.section("studio").get("keyframe_batch_size", 12),
         }
         task_id = db.enqueue_task(episode_id, "generate_keyframe", payload=payload)
         if episode["status"] == "draft":
             db.update_episode_status(episode_id, "in_progress")
         return {"task_id": task_id}
+
+    @app.post("/api/episodes/{episode_id}/keyframes/cancel")
+    def cancel_keyframe_generation(episode_id: int) -> dict[str, Any]:
+        """Tab 1's "Stop" button -- lets the reviewer abandon a batch that's
+        already running because they spotted a mistake in the prompt,
+        instead of waiting the ~3 minutes for it to finish first.
+
+        generate_keyframe always runs on local_comfyui (never remote --
+        see build_handlers' docstring), so interrupting that one client is
+        always the right target for this task type. Interrupting is what
+        actually unblocks the single worker thread: it's currently blocked
+        inside wait_for_result()'s poll loop for whatever's running, and
+        with nothing telling ComfyUI to stop, the worker would stay stuck
+        there -- unable to pick up a fresh Generate click -- until that
+        abandoned job eventually finished on its own.
+        """
+        if db.episode(episode_id) is None:
+            raise HTTPException(404, "episode not found")
+        local_comfyui.interrupt()
+        cancelled = db.cancel_tasks(
+            episode_id, {"generate_keyframe"}, error="使用者手動終止生成"
+        )
+        return {"cancelled": cancelled}
 
     @app.post("/api/episodes/{episode_id}/motion/assemble-preview")
     def assemble_motion_preview(episode_id: int) -> dict[str, Any]:
@@ -282,6 +312,29 @@ def create_app(db: StateDB) -> FastAPI:
         task_id = db.enqueue_task(episode_id, "build_loop_preview", payload=payload)
         return {"task_id": task_id}
 
+    @app.post("/api/episodes/{episode_id}/motion/cancel")
+    def cancel_motion_generation(episode_id: int) -> dict[str, Any]:
+        """Tab 2's "Stop" button -- same reasoning as cancel_keyframe_
+        generation above, scoped to generate_motion_test (always local_
+        comfyui too -- see build_handlers' docstring). Deliberately does
+        NOT touch build_loop_preview: that stage is pure ffmpeg concat of
+        already-downloaded clips, seconds not minutes, so there's nothing
+        worth interrupting there and no ComfyUI job to stop it with anyway.
+
+        Cancelling turns the affected motion_test asset(s) from 'running'/
+        'queued' to 'failed' -- reject_asset() below accepts 'failed' as
+        well as 'awaiting_review' precisely so the reviewer can immediately
+        hit that role's Regenerate button with a corrected prompt instead
+        of being stuck with a dead placeholder and no way back in.
+        """
+        if db.episode(episode_id) is None:
+            raise HTTPException(404, "episode not found")
+        local_comfyui.interrupt()
+        cancelled = db.cancel_tasks(
+            episode_id, {"generate_motion_test"}, error="使用者手動終止生成"
+        )
+        return {"cancelled": cancelled}
+
     @app.get("/api/episodes/{episode_id}")
     def get_episode(episode_id: int) -> dict[str, Any]:
         episode = db.episode(episode_id)
@@ -345,11 +398,19 @@ def create_app(db: StateDB) -> FastAPI:
                 f"{asset['kind']} assets don't support per-asset reject -- "
                 "use this stage's own regenerate/reassemble action instead",
             )
-        if asset["status"] != "awaiting_review":
-            raise HTTPException(409, f"asset is {asset['status']!r}, not awaiting_review")
+        if asset["status"] not in ("awaiting_review", "failed"):
+            # 'failed' is here alongside the normal awaiting_review path so
+            # a cancelled-mid-generation asset (see cancel_keyframe_
+            # generation/cancel_motion_generation above) can be requeued
+            # the exact same way as a completed one the reviewer didn't
+            # like -- otherwise cancelling would be a dead end with no way
+            # back in for that role.
+            raise HTTPException(
+                409, f"asset is {asset['status']!r}, not awaiting_review or failed"
+            )
         ok = db.transition_asset(
             asset_id,
-            expected_status="awaiting_review",
+            expected_status=asset["status"],
             expected_version=body.expected_version,
             status="rejected",
             error=body.reason or None,

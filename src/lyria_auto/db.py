@@ -1358,3 +1358,35 @@ class StateDB:
             (status, error, utc_now_iso(), task_id),
         )
         self.conn.commit()
+
+    def cancel_tasks(self, episode_id: int, task_types: set[str], error: str) -> int:
+        """Fail every queued/running task of the given types for this
+        episode, plus each one's linked asset if it has one -- for user-
+        initiated cancellation (a "stop" button), not crash recovery.
+
+        Deliberately handles 'queued' as well as 'running': unlike
+        recover_stale_tasks() (which only ever touches 'running' tasks left
+        over from a crashed process, since nothing in a freshly-starting
+        process could legitimately still be running), a queued task here
+        was never claimed, so its linked asset -- if any -- is still
+        'queued' too, not 'running'. The caller is responsible for actually
+        interrupting whatever's executing on ComfyUI first; this only
+        updates state, it has no way to stop a running generation itself.
+        """
+        cancelled = 0
+        for task in self.tasks_for_episode(episode_id):
+            if task["task_type"] not in task_types or task["status"] not in ("queued", "running"):
+                continue
+            self.finish_task(task["id"], status="failed", error=error)
+            if task["asset_id"] is not None:
+                asset = self.asset(task["asset_id"])
+                if asset is not None and asset["status"] in ("queued", "running"):
+                    self.transition_asset(
+                        task["asset_id"],
+                        expected_status=asset["status"],
+                        expected_version=asset["state_version"],
+                        status="failed",
+                        error=error,
+                    )
+            cancelled += 1
+        return cancelled

@@ -9,16 +9,28 @@
 // in here actually runs.
 
 // Cached across every episode after the first fetch -- these are global
-// module constants (src/lyria_auto/studio/stages.py's DEFAULT_KEYFRAME_
-// PROMPT/KEYFRAME_NEGATIVE_PROMPT), not per-episode data, so one page load
-// only ever needs to ask the backend for them once.
-let _cachedDefaultPrompts = null;
+// module constants/config (src/lyria_auto/studio/stages.py's DEFAULT_
+// KEYFRAME_PROMPT/KEYFRAME_NEGATIVE_PROMPT plus config/settings.yaml's
+// studio.keyframe_batch_size), not per-episode data, so one page load only
+// ever needs to ask the backend for them once.
+let _cachedDefaults = null;
 
-async function _fetchDefaultPromptsOnce(ctx) {
-  if (!_cachedDefaultPrompts) {
-    _cachedDefaultPrompts = await ctx.api('/api/keyframes/defaults');
+async function _fetchDefaultsOnce(ctx) {
+  if (!_cachedDefaults) {
+    _cachedDefaults = await ctx.api('/api/keyframes/defaults');
   }
-  return _cachedDefaultPrompts;
+  return _cachedDefaults;
+}
+
+function _selectedBatchSize($) {
+  const active = $('.batch-size-btn.active');
+  return active ? Number(active.dataset.size) : null;
+}
+
+function _selectBatchSize($$, size) {
+  $$('.batch-size-btn').forEach(btn => {
+    btn.classList.toggle('active', Number(btn.dataset.size) === size);
+  });
 }
 
 export async function renderKeyframeTab(data, ctx) {
@@ -44,20 +56,24 @@ export async function renderKeyframeTab(data, ctx) {
     if (!$('#negPrompt').value && payload.negative_prompt) {
       $('#negPrompt').value = payload.negative_prompt;
     }
-  } else if (!$('#posPrompt').value || !$('#negPrompt').value) {
+    if (_selectedBatchSize($) == null && payload.batch_size) {
+      _selectBatchSize($$, payload.batch_size);
+    }
+  } else if (!$('#posPrompt').value || !$('#negPrompt').value || _selectedBatchSize($) == null) {
     // A brand-new episode has no generate_keyframe task yet, so there's no
     // payload_json to read "what actually produced these candidates" from
-    // -- without this, the boxes just stayed blank until after the first
-    // Generate click, with nothing to see or edit beforehand (user-reported
-    // gap, 2026-08-31). Falls back to the same module-level defaults the
-    // backend itself falls back to when a field is left blank.
+    // -- without this, the boxes/buttons just stayed blank until after the
+    // first Generate click, with nothing to see or edit beforehand (user-
+    // reported gap, 2026-08-31). Falls back to the same defaults the
+    // backend itself falls back to when a field/batch_size is left unset.
     try {
-      const defaults = await _fetchDefaultPromptsOnce(ctx);
+      const defaults = await _fetchDefaultsOnce(ctx);
       if (!$('#posPrompt').value) $('#posPrompt').value = defaults.positive_prompt;
       if (!$('#negPrompt').value) $('#negPrompt').value = defaults.negative_prompt;
+      if (_selectedBatchSize($) == null) _selectBatchSize($$, defaults.batch_size);
     } catch {
-      // Non-critical -- worst case the boxes stay blank until Generate
-      // succeeds once and the branch above takes over.
+      // Non-critical -- worst case the boxes/buttons stay blank until
+      // Generate succeeds once and the branch above takes over.
     }
   }
 
@@ -65,6 +81,7 @@ export async function renderKeyframeTab(data, ctx) {
   // further regenerate call (409) -- don't offer a button that always errors.
   $('#generateKeyframes').disabled = isGenerating;
   $('#regenerateKeyframes').disabled = isGenerating || hasApproved;
+  $$('.batch-size-btn').forEach(btn => { btn.disabled = isGenerating || hasApproved; });
 
   if (hasApproved) {
     $('#generateKeyframes').classList.add('hidden');
@@ -76,6 +93,9 @@ export async function renderKeyframeTab(data, ctx) {
     $('#generateKeyframes').classList.remove('hidden');
     $('#regenerateKeyframes').classList.add('hidden');
   }
+  // Only offer Stop while something's actually running -- there's nothing
+  // to cancel otherwise.
+  $('#cancelKeyframes').classList.toggle('hidden', !isGenerating);
 
   // Update status
   let statusText = '';
@@ -131,9 +151,13 @@ export async function renderKeyframeTab(data, ctx) {
 }
 
 export function bindKeyframeTab(ctx) {
-  const { $ } = ctx;
+  const { $, $$ } = ctx;
   $('#generateKeyframes').onclick = () => generateKeyframes(ctx);
   $('#regenerateKeyframes').onclick = () => generateKeyframes(ctx);
+  $('#cancelKeyframes').onclick = () => cancelKeyframes(ctx);
+  $$('.batch-size-btn').forEach(btn => {
+    btn.onclick = () => _selectBatchSize($$, Number(btn.dataset.size));
+  });
 }
 
 async function approveKeyframe(ctx, assetId, expectedVersion) {
@@ -153,7 +177,7 @@ async function approveKeyframe(ctx, assetId, expectedVersion) {
 }
 
 async function generateKeyframes(ctx) {
-  const { $, api, getEpisodeId, refresh } = ctx;
+  const { $, $$, api, getEpisodeId, refresh } = ctx;
   const episodeId = getEpisodeId();
   if (!episodeId) return;
   const pos = $('#posPrompt').value.trim();
@@ -161,11 +185,14 @@ async function generateKeyframes(ctx) {
   const body = {};
   if (pos) body.positive_prompt = pos;
   if (neg) body.negative_prompt = neg;
+  const batchSize = _selectedBatchSize($);
+  if (batchSize) body.batch_size = batchSize;
 
   try {
     $('#keyframeStatus').textContent = '開始生成...';
     $('#generateKeyframes').disabled = true;
     $('#regenerateKeyframes').disabled = true;
+    $$('.batch-size-btn').forEach(btn => { btn.disabled = true; });
     await api(`/api/episodes/${episodeId}/keyframes/generate`, {
       method: 'POST',
       body: JSON.stringify(body)
@@ -175,5 +202,23 @@ async function generateKeyframes(ctx) {
     alert(err.message);
     $('#generateKeyframes').disabled = false;
     $('#regenerateKeyframes').disabled = false;
+    $$('.batch-size-btn').forEach(btn => { btn.disabled = false; });
+  }
+}
+
+async function cancelKeyframes(ctx) {
+  const { $, api, getEpisodeId, refresh } = ctx;
+  const episodeId = getEpisodeId();
+  if (!episodeId) return;
+  try {
+    $('#cancelKeyframes').disabled = true;
+    $('#keyframeStatus').textContent = '正在終止...';
+    await api(`/api/episodes/${episodeId}/keyframes/cancel`, { method: 'POST' });
+    await refresh();
+  } catch (err) {
+    alert(err.message);
+    await refresh();
+  } finally {
+    $('#cancelKeyframes').disabled = false;
   }
 }

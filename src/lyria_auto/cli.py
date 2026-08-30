@@ -168,7 +168,7 @@ def main(argv: list[str] | None = None) -> None:
         worker = StudioWorker(pipeline.db, handlers=handlers)
         worker.start()
         try:
-            app = create_app(pipeline.db)
+            app = create_app(pipeline.db, config, local_comfyui)
             print(f"Lyria Studio: http://{args.host}:{args.port}")
             uvicorn.run(app, host=args.host, port=args.port)
         finally:

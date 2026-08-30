@@ -15,7 +15,13 @@ input, textarea { width: 100%; box-sizing: border-box; padding: 0.5rem; border-r
 button { padding: 0.5rem 1rem; border: none; border-radius: 6px; cursor: pointer; font-size: 0.95rem; background: #3b82f6; color: white; }
 button:disabled { opacity: 0.6; cursor: not-allowed; }
 button.reject { background: #ef4444; }
+button.stop-btn { background: #ef4444; margin-left: 0.5rem; }
 button.approve-btn { background: #10b981; width: 100%; margin-top: 0.5rem; }
+
+/* Batch size picker */
+.batch-size-group { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+.batch-size-btn { background: #e5e7eb; color: #374151; font-weight: 500; }
+.batch-size-btn.active { background: #3b82f6; color: white; }
 
 /* Tabs */
 .tabs { display: flex; gap: 0.5rem; margin-bottom: 1rem; border-bottom: 1px solid #e5e7eb; padding-bottom: 0.5rem; flex-wrap: wrap; }
