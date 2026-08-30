@@ -8,7 +8,20 @@
 // current episode can change between when ctx is built and when a handler
 // in here actually runs.
 
-export function renderKeyframeTab(data, ctx) {
+// Cached across every episode after the first fetch -- these are global
+// module constants (src/lyria_auto/studio/stages.py's DEFAULT_KEYFRAME_
+// PROMPT/KEYFRAME_NEGATIVE_PROMPT), not per-episode data, so one page load
+// only ever needs to ask the backend for them once.
+let _cachedDefaultPrompts = null;
+
+async function _fetchDefaultPromptsOnce(ctx) {
+  if (!_cachedDefaultPrompts) {
+    _cachedDefaultPrompts = await ctx.api('/api/keyframes/defaults');
+  }
+  return _cachedDefaultPrompts;
+}
+
+export async function renderKeyframeTab(data, ctx) {
   const { $, $$, STATUS_LABEL } = ctx;
   const keyframes = data.assets.filter(a => a.kind === 'keyframe');
   const activeKeyframes = keyframes.filter(a => a.status !== 'superseded');
@@ -30,6 +43,21 @@ export function renderKeyframeTab(data, ctx) {
     }
     if (!$('#negPrompt').value && payload.negative_prompt) {
       $('#negPrompt').value = payload.negative_prompt;
+    }
+  } else if (!$('#posPrompt').value || !$('#negPrompt').value) {
+    // A brand-new episode has no generate_keyframe task yet, so there's no
+    // payload_json to read "what actually produced these candidates" from
+    // -- without this, the boxes just stayed blank until after the first
+    // Generate click, with nothing to see or edit beforehand (user-reported
+    // gap, 2026-08-31). Falls back to the same module-level defaults the
+    // backend itself falls back to when a field is left blank.
+    try {
+      const defaults = await _fetchDefaultPromptsOnce(ctx);
+      if (!$('#posPrompt').value) $('#posPrompt').value = defaults.positive_prompt;
+      if (!$('#negPrompt').value) $('#negPrompt').value = defaults.negative_prompt;
+    } catch {
+      // Non-critical -- worst case the boxes stay blank until Generate
+      // succeeds once and the branch above takes over.
     }
   }
 

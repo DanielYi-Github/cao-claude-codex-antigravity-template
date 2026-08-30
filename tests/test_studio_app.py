@@ -73,6 +73,23 @@ def test_generate_keyframes_with_no_prompt_still_enqueues_a_task(tmp_path):
     }
 
 
+def test_keyframe_defaults_endpoint_returns_the_same_constants_generate_falls_back_to(tmp_path):
+    """A brand-new episode has no generate_keyframe task yet, so tab 1's
+    prompt boxes have no payload_json to pre-fill from -- this is the
+    endpoint the frontend calls instead so the boxes show something before
+    the first Generate click (user-reported gap, 2026-08-31). Not episode-
+    scoped, so no episode needs to exist to call it."""
+    _db, client = _client(tmp_path)
+
+    resp = client.get("/api/keyframes/defaults")
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {
+        "positive_prompt": DEFAULT_KEYFRAME_PROMPT,
+        "negative_prompt": KEYFRAME_NEGATIVE_PROMPT,
+    }
+
+
 def test_regenerate_supersedes_the_previous_awaiting_review_batch(tmp_path):
     db, client = _client(tmp_path)
     episode = client.post("/api/episodes", json={"slug": "e", "title": "E"}).json()

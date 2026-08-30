@@ -147,6 +147,22 @@ def create_app(db: StateDB) -> FastAPI:
         episode_id = db.create_episode(body.slug, body.title)
         return dict(db.episode(episode_id))
 
+    @app.get("/api/keyframes/defaults")
+    def keyframe_defaults() -> dict[str, str]:
+        """What tab 1's prompt boxes pre-fill with before the reviewer has
+        ever clicked Generate for an episode -- at that point there's no
+        generate_keyframe task yet to read a payload_json off of (the
+        mechanism the frontend otherwise uses to show "what actually
+        produced these candidates"), so without this the boxes just stay
+        blank on a brand-new episode with nothing to edit before the first
+        click. Not episode-scoped: these are the same two module-level
+        constants generate_keyframes() below falls back to.
+        """
+        return {
+            "positive_prompt": DEFAULT_KEYFRAME_PROMPT,
+            "negative_prompt": KEYFRAME_NEGATIVE_PROMPT,
+        }
+
     @app.post("/api/episodes/{episode_id}/keyframes/generate")
     def generate_keyframes(episode_id: int, body: GenerateKeyframesRequest) -> dict[str, Any]:
         """Tab 1's "Generate" button -- also what "regenerate all" calls.

@@ -102,7 +102,7 @@ async function renderEpisode(episodeId) {
 
   $('#episodeTitle').textContent = `${data.episode.title}（${data.episode.status}）`;
 
-  renderKeyframeTab(data, ctx);
+  await renderKeyframeTab(data, ctx);
   renderMotionTab(data, ctx);
 }
 
