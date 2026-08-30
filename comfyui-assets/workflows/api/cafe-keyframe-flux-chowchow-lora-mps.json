@@ -76,8 +76,8 @@
       "note": "Node id 20 is intentionally not 10: stages.py's generate_keyframe() has a `if \"10\" in workflow` branch that assumes node 10 is the composite workflow's character-cutout LoadImage node and patches an `image` field onto it. Keeping this LoRA loader off id 10 lets that branch correctly no-op for this workflow instead of misfiring."
     },
     "inputs": {
-      "lora_name": "chowchow-identity-v1.safetensors",
-      "strength_model": 0.9,
+      "lora_name": "chowchow-identity-v2.safetensors",
+      "strength_model": 0.65,
       "strength_clip": 0,
       "model": ["1", 0],
       "clip": ["8", 0]
