@@ -164,6 +164,53 @@ def _approved_asset(db: StateDB, episode_id: int, kind: str, role: str) -> Any:
     return candidates[-1]
 
 
+def _resolve_bound_assets(
+    db: StateDB, episode_id: int, payload: dict[str, Any], source_kind: str
+) -> dict[str, Any]:
+    """Resolve the sleep/lookup source assets for a loop build.
+
+    Prefers ids pinned into the task's payload_json at enqueue time (see
+    app.py's assemble_motion_preview) over a fresh "whatever's approved
+    now" lookup, so a build always matches what the caller saw at the
+    moment they triggered it, not whatever happens to be approved by the
+    time the worker gets around to it (codex_reviewer design consult,
+    studio-console-v2-plan.md 7.8). Falls back to the latest-approved
+    lookup when the task carries no pinned ids -- app.py's clip_1080p ->
+    loop fan-in still enqueues build_loop with no payload at all.
+    """
+    # `is None`, not a truthiness check -- an empty {} would otherwise
+    # silently take the fallback branch below instead of failing loudly
+    # (codex_reviewer Phase 2 review).
+    pinned = payload.get("source_asset_ids")
+    if pinned is None:
+        return {
+            role: _approved_asset(db, episode_id, source_kind, role)
+            for role in ("sleep", "lookup")
+        }
+    if set(pinned.keys()) != {"sleep", "lookup"}:
+        raise GenerationError(
+            f"source_asset_ids 的 key 必須恰好是 sleep 和 lookup，實際是 {sorted(pinned)}"
+        )
+    if len(set(pinned.values())) != len(pinned):
+        raise GenerationError(f"source_asset_ids 裡兩個角色不能指向同一個 asset：{pinned}")
+    resolved: dict[str, Any] = {}
+    for role, asset_id in pinned.items():
+        asset = db.asset(asset_id)
+        if (
+            asset is None
+            or asset["episode_id"] != episode_id
+            or asset["kind"] != source_kind
+            or asset["role"] != role
+            or asset["status"] != "approved"
+        ):
+            raise GenerationError(
+                f"綁定的來源素材 id={asset_id}（{role}）現在不是已核准的 {source_kind}/{role}"
+                "——組合期間狀態被改變了，請重新組合一次"
+            )
+        resolved[role] = asset
+    return resolved
+
+
 def _video_metadata(path: Path) -> dict[str, Any]:
     info = probe_video(path)
     video_streams = [s for s in info.get("streams", []) if s.get("codec_type") == "video"]
@@ -277,15 +324,35 @@ def build_handlers(
     clip_comfyui = remote_comfyui or local_comfyui
 
     def generate_keyframe(db: StateDB, task: Any) -> None:
-        asset = db.asset(task["asset_id"])
-        episode = db.episode(asset["episode_id"])
-        prompt = asset["source_prompt"] or DEFAULT_KEYFRAME_PROMPT
-        dest = _episode_dir(config, episode["slug"]) / f"keyframe-shared-v{asset['variant_index']}.png"
+        """Fan out one ComfyUI batch submission into N candidate assets.
+
+        Unlike every other stage, this one carries no asset_id (same
+        no-pre-existing-row pattern build_loop/render_final already use) --
+        studio-console-v2-plan.md's tab 1 wants N candidates shown together,
+        not one placeholder filled in. The prompt comes from the task's
+        payload_json (set by app.py's generate_keyframes endpoint), not from
+        an asset row, since there isn't one until this handler creates them.
+        """
+        episode_id = task["episode_id"]
+        episode = db.episode(episode_id)
+        payload = json.loads(task["payload_json"]) if task["payload_json"] else {}
+        prompt = payload.get("positive_prompt") or DEFAULT_KEYFRAME_PROMPT
+        negative_prompt = payload.get("negative_prompt") or KEYFRAME_NEGATIVE_PROMPT
+        batch_size = int(
+            payload.get("batch_size")
+            or config.section("studio").get("keyframe_batch_size", 12)
+        )
+        if batch_size <= 0:
+            raise GenerationError(f"keyframe_batch_size 必須大於 0，目前是 {batch_size}")
         patches = {
             "2": {"text": prompt},
-            "3": {"text": KEYFRAME_NEGATIVE_PROMPT},
-            "4": {"batch_size": 1},
-            "5": {"seed": _seed_for(config, asset["id"])},
+            "3": {"text": negative_prompt},
+            "4": {"batch_size": batch_size},
+            # Seeded from the task id, not the episode id: a "regenerate
+            # all" click enqueues a new task for the same episode, and must
+            # get a different seed or it would silently return the exact
+            # same 12 images -- regenerate would look like it did nothing.
+            "5": {"seed": _seed_for(config, task["id"])},
         }
         # The composite workflow has node 10 as its character input. Keep the
         # conditional so unit-test/minimal workflows and the legacy text-only
@@ -299,20 +366,58 @@ def build_handlers(
                 reference, name_hint="chowchow-lying"
             )
             patches["10"] = {"image": staged_name}
-        prompt_id = _run_stage(local_comfyui, workflows_dir / KEYFRAME_WORKFLOW, patches, dest)
-        with Image.open(dest) as image:
-            width, height = image.size
-        db.transition_asset(
-            asset["id"],
-            expected_status="running",
-            expected_version=asset["state_version"],
-            status="awaiting_review",
-            path=str(dest),
-            sha256=sha256_file(dest),
-            width=width,
-            height=height,
-            comfyui_prompt_id=prompt_id,
-        )
+        for node_id, fields in patches.items():
+            workflow[node_id]["inputs"].update(fields)
+        prompt_id = local_comfyui.submit(workflow)
+        history_entry = local_comfyui.wait_for_result(prompt_id)
+        items = local_comfyui.fetch_all_outputs(history_entry)
+        if len(items) != batch_size:
+            raise GenerationError(
+                f"要求 batch_size={batch_size}，但 ComfyUI 只回傳了 {len(items)} 張圖片"
+                f"（prompt_id={prompt_id}）"
+            )
+
+        # Continues past every prior attempt for this episode (including
+        # superseded/rejected ones) rather than resetting to 0 per batch --
+        # see StateDB.next_variant_index for why a reset would collide.
+        start_index = db.next_variant_index(episode_id, "keyframe", "shared")
+        episode_dir = _episode_dir(config, episode["slug"])
+        seed = _seed_for(config, task["id"])
+
+        # Download and validate every image to disk BEFORE creating any DB
+        # rows. If image k fails, only files -- never half a batch of
+        # awaiting_review rows -- exist on disk, so the caller never sees a
+        # task marked "failed" next to candidates that are still selectable.
+        downloaded: list[tuple[int, Path, int, int]] = []
+        for offset, item in enumerate(items):
+            variant_index = start_index + offset
+            dest = episode_dir / f"keyframe-shared-v{variant_index}.png"
+            local_comfyui.download_output(item, dest)
+            with Image.open(dest) as image:
+                width, height = image.size
+            downloaded.append((variant_index, dest, width, height))
+
+        for variant_index, dest, width, height in downloaded:
+            asset_id = db.create_asset(
+                episode_id, "keyframe", "shared",
+                variant_index=variant_index, source_prompt=prompt, source_seed=seed,
+            )
+            ok = db.transition_asset(
+                asset_id,
+                expected_status="queued",
+                expected_version=0,
+                status="awaiting_review",
+                path=str(dest),
+                sha256=sha256_file(dest),
+                width=width,
+                height=height,
+                comfyui_prompt_id=prompt_id,
+            )
+            if not ok:
+                raise GenerationError(
+                    f"無法把 asset {asset_id} 轉成 awaiting_review"
+                    "（expected_status/expected_version 不符，狀態可能被別的流程改動過）"
+                )
 
     def _generate_motion(db: StateDB, task: Any, *, comfyui: ComfyUIClient, dir_kind: str) -> None:
         asset = db.asset(task["asset_id"])
@@ -387,33 +492,38 @@ def build_handlers(
             **metadata,
         )
 
-    def build_loop(db: StateDB, task: Any) -> None:
-        """Assemble the 64s macro-loop from the two approved clip_1080p roles.
+    def _build_loop_variant(db: StateDB, task: Any, *, source_kind: str, dest_kind: str) -> None:
+        """Shared implementation behind build_loop_preview (motion_test,
+        768x432) and build_loop (clip_1080p, 1920x1080) -- same concat +
+        verify shape, differing only in which approved asset kind feeds it
+        and what kind of asset it produces. Both stay 8s/segment and 64s
+        total: motion_test and clip_1080p assets come from the same
+        MOTION_WORKFLOW frame count regardless of resolution (see
+        _MOTION_DIMENSIONS), so SEGMENT_SECONDS/LOOP_SEQUENCE apply to
+        either source kind unchanged.
 
-        Enqueued by app.py's fan-in with no asset_id (there's nothing to
-        transition to 'running' yet -- the asset doesn't exist until this
-        handler creates it), unlike every stage above.
+        Enqueued by app.py with no asset_id (there's nothing to transition
+        to 'running' yet -- the asset doesn't exist until this handler
+        creates it), unlike every ComfyUI stage above.
         """
         episode_id = task["episode_id"]
         episode = db.episode(episode_id)
-        clips = {
-            role: _approved_asset(db, episode_id, "clip_1080p", role)
-            for role in ("sleep", "lookup")
-        }
+        payload = json.loads(task["payload_json"]) if task["payload_json"] else {}
+        clips = _resolve_bound_assets(db, episode_id, payload, source_kind)
         for role, clip in clips.items():
             duration = _video_metadata(Path(clip["path"]))["duration_seconds"]
             if abs(duration - SEGMENT_SECONDS) > 0.5:
                 raise GenerationError(
-                    f"{role} clip_1080p is {duration:.2f}s, expected {SEGMENT_SECONDS}s "
+                    f"{role} {source_kind} is {duration:.2f}s, expected {SEGMENT_SECONDS}s "
                     f"-- can't build an exact {SEGMENT_SECONDS * len(LOOP_SEQUENCE):.0f}s loop"
                 )
 
-        dest = _episode_dir(config, episode["slug"]) / "loop-shared-v0.mp4"
+        dest = _episode_dir(config, episode["slug"]) / f"{dest_kind}-shared-v0.mp4"
         _concat_copy([clips[role]["path"] for role in LOOP_SEQUENCE], dest)
         _verify_loop_duration(dest, SEGMENT_SECONDS * len(LOOP_SEQUENCE))
 
         metadata = _video_metadata(dest)
-        asset_id = db.create_asset(episode_id, "loop", "shared", status="running")
+        asset_id = db.create_asset(episode_id, dest_kind, "shared", status="running")
         db.transition_asset(
             asset_id,
             expected_status="running",
@@ -423,6 +533,12 @@ def build_handlers(
             sha256=sha256_file(dest),
             **metadata,
         )
+
+    def build_loop_preview(db: StateDB, task: Any) -> None:
+        _build_loop_variant(db, task, source_kind="motion_test", dest_kind="loop_preview")
+
+    def build_loop(db: StateDB, task: Any) -> None:
+        _build_loop_variant(db, task, source_kind="clip_1080p", dest_kind="loop")
 
     def render_final(db: StateDB, task: Any) -> None:
         """Repeat the approved loop to match a music track's length and mux it in.
@@ -488,6 +604,7 @@ def build_handlers(
         "generate_motion_test": generate_motion_test,
         "generate_clip": generate_clip,
         "upscale_clip": upscale_clip,
+        "build_loop_preview": build_loop_preview,
         "build_loop": build_loop,
         "render_final": render_final,
     }

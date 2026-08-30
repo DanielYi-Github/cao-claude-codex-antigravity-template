@@ -1,20 +1,15 @@
-const $ = (s, root = document) => root.querySelector(s);
+import { renderKeyframeTab, bindKeyframeTab } from './tabs/tab1-keyframes.js';
+import { renderMotionTab, bindMotionTab } from './tabs/tab2-motion.js';
 
-const KIND_LABEL = {
-  keyframe: '關鍵幀',
-  motion_test: '動作試拍',
-  clip: '正式生成',
-  clip_1080p: '1080p 升頻',
-  loop: '64 秒循環',
-  final: '最終成片',
-};
-const ROLE_LABEL = { shared: '共用', sleep: '睡覺搖尾巴', lookup: '抬頭看主人' };
-const STATUS_LABEL = {
+export const $ = (s, root = document) => root.querySelector(s);
+export const $$ = (s, root = document) => root.querySelectorAll(s);
+
+export const STATUS_LABEL = {
   queued: '排隊中', running: '生成中', ready: '完成', awaiting_review: '待審核',
   approved: '已核准', rejected: '已退回', superseded: '已被取代', failed: '失敗',
 };
 
-async function api(path, options) {
+export async function api(path, options) {
   const resp = await fetch(path, {
     headers: { 'Content-Type': 'application/json' },
     ...options,
@@ -27,6 +22,7 @@ async function api(path, options) {
 }
 
 let pollTimer = null;
+let currentEpisodeId = null;
 
 function stopPolling() {
   if (pollTimer) {
@@ -37,6 +33,7 @@ function stopPolling() {
 
 function showListView() {
   stopPolling();
+  currentEpisodeId = null;
   $('#episode-list-view').classList.remove('hidden');
   $('#episode-detail-view').classList.add('hidden');
   loadEpisodeList();
@@ -50,113 +47,72 @@ async function loadEpisodeList() {
       <span class="badge">${ep.status}</span>
     </div>
   `).join('') || '<p>還沒有集數。</p>';
-  document.querySelectorAll('.episode-row').forEach((row) => {
+  $$('.episode-row').forEach((row) => {
     row.onclick = () => openEpisode(Number(row.dataset.id));
   });
 }
 
-function artifactElement(asset) {
-  if (!asset.path) return '<span class="muted">尚未產出</span>';
-  const src = `/api/artifact/${asset.id}`;
-  return asset.kind === 'keyframe'
-    ? `<img src="${src}" alt="keyframe">`
-    : `<video src="${src}" controls preload="metadata"></video>`;
-}
-
-function assetCard(asset) {
-  const reviewButtons = asset.status === 'awaiting_review' ? `
-    <button class="approve" data-id="${asset.id}" data-version="${asset.state_version}">核准</button>
-    <button class="reject" data-id="${asset.id}" data-version="${asset.state_version}">退回重做</button>
-  ` : '';
-  const error = asset.error ? `<p class="error">${asset.error}</p>` : '';
-  return `
-    <div class="asset-card">
-      <div class="asset-meta">
-        <span class="role">${ROLE_LABEL[asset.role] || asset.role}</span>
-        <span class="badge">${STATUS_LABEL[asset.status] || asset.status}</span>
-        ${asset.variant_index ? `<span class="muted">v${asset.variant_index + 1}</span>` : ''}
-      </div>
-      ${artifactElement(asset)}
-      ${error}
-      ${reviewButtons}
-    </div>
-  `;
-}
+// Tab Switching
+$$('.tab-btn').forEach(btn => {
+  btn.onclick = () => {
+    $$('.tab-btn').forEach(b => b.classList.remove('active'));
+    $$('.tab-content').forEach(c => c.classList.add('hidden'));
+    btn.classList.add('active');
+    $(`#tab-${btn.dataset.tab}`).classList.remove('hidden');
+  };
+});
 
 let lastRenderedSnapshot = null;
 
+// Shared context every per-tab module receives instead of importing this
+// file's internals directly -- only app.js touches currentEpisodeId /
+// renderEpisode, so tab modules stay self-contained (studio-console-v2-
+// plan.md 7.0). getEpisodeId/refresh are functions, not values, since the
+// open episode can change after ctx is built.
+const ctx = {
+  $, $$, api, STATUS_LABEL,
+  getEpisodeId: () => currentEpisodeId,
+  refresh: () => renderEpisode(currentEpisodeId),
+  openLightbox,
+};
+
 async function openEpisode(episodeId) {
+  currentEpisodeId = episodeId;
   $('#episode-list-view').classList.add('hidden');
   $('#episode-detail-view').classList.remove('hidden');
   lastRenderedSnapshot = null;
+
+  // Reset Tab 1 UI
+  $('#posPrompt').value = '';
+  $('#negPrompt').value = '';
+  $('#keyframeStatus').textContent = '';
+
   await renderEpisode(episodeId);
-  // Assets flip queued -> running -> awaiting_review in the background
-  // (ComfyUI generation, no websocket push), so poll while this episode is
-  // open instead of asking the reviewer to guess when to refresh.
   stopPolling();
   pollTimer = setInterval(() => renderEpisode(episodeId), 3000);
 }
 
 async function renderEpisode(episodeId) {
+  if (episodeId !== currentEpisodeId) return;
   const data = await api(`/api/episodes/${episodeId}`);
 
-  // Skip the redraw entirely when nothing changed since the last poll --
-  // rebuilding the asset cards on every tick would tear down and recreate
-  // any <video> the reviewer currently has playing, resetting it to 0:00
-  // every 3s and making playback look broken.
   const snapshot = JSON.stringify(data);
   if (snapshot === lastRenderedSnapshot) return;
   lastRenderedSnapshot = snapshot;
 
   $('#episodeTitle').textContent = `${data.episode.title}（${data.episode.status}）`;
 
-  const groups = {};
-  for (const asset of data.assets) {
-    (groups[asset.kind] = groups[asset.kind] || []).push(asset);
-  }
-  const order = ['keyframe', 'motion_test', 'clip', 'clip_1080p', 'loop', 'final'];
-  $('#assetGroups').innerHTML = order
-    .filter((kind) => groups[kind])
-    .map((kind) => `
-      <div class="card">
-        <h3>${KIND_LABEL[kind]}</h3>
-        <div class="asset-row">${groups[kind].map(assetCard).join('')}</div>
-      </div>
-    `).join('');
-
-  document.querySelectorAll('.asset-card img').forEach((img) => {
-    img.onclick = () => openLightbox(img.src);
-  });
-  document.querySelectorAll('.approve').forEach((btn) => {
-    btn.onclick = () => decide(episodeId, btn.dataset.id, 'approve', { expected_version: Number(btn.dataset.version) });
-  });
-  document.querySelectorAll('.reject').forEach((btn) => {
-    btn.onclick = () => {
-      const reason = prompt('退回原因（可留空）：') || '';
-      decide(episodeId, btn.dataset.id, 'reject', { expected_version: Number(btn.dataset.version), reason });
-    };
-  });
+  renderKeyframeTab(data, ctx);
+  renderMotionTab(data, ctx);
 }
 
-function openLightbox(src) {
+export function openLightbox(src) {
   $('#lightboxImg').src = src;
-  $('#lightbox').classList.remove('hidden');
+  $('#lightbox').showModal();
 }
 
-$('#lightbox').onclick = () => $('#lightbox').classList.add('hidden');
-
-async function decide(episodeId, assetId, action, body) {
-  try {
-    await api(`/api/episodes/${episodeId}/assets/${assetId}/${action}`, {
-      method: 'POST',
-      body: JSON.stringify(body),
-    });
-    await renderEpisode(episodeId);
-  } catch (err) {
-    alert(err.message);
-    await renderEpisode(episodeId);
-  }
-}
+bindKeyframeTab(ctx);
+bindMotionTab(ctx);
 
 $('#createEpisode').onclick = async () => {
   const slug = $('#newSlug').value.trim();

@@ -1,0 +1,106 @@
+/* Tab 2 Motion Styles */
+
+.motion-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 1.25rem;
+  margin-top: 1rem;
+}
+
+.motion-card {
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+}
+
+.motion-card.approved {
+  border: 2px solid #10b981;
+  background: #ecfdf5;
+}
+
+.motion-card.rejected {
+  border: 1px solid #ef4444;
+  background: #fef2f2;
+}
+
+.motion-meta {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.5rem;
+}
+
+.motion-title {
+  font-weight: 600;
+  font-size: 1rem;
+  color: #1f2937;
+}
+
+.motion-video,
+.preview-video {
+  width: 100%;
+  border-radius: 6px;
+  margin: 0.5rem 0;
+  background: #000000;
+  aspect-ratio: 16 / 9;
+  max-height: 360px;
+  object-fit: contain;
+}
+
+.placeholder-video {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: #f3f4f6;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #9ca3af;
+  margin: 0.5rem 0;
+  border-radius: 6px;
+  font-size: 0.95rem;
+  border: 1px dashed #d1d5db;
+}
+
+.motion-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: auto;
+  padding-top: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.motion-actions button {
+  flex: 1;
+  min-width: 120px;
+}
+
+.preview-card {
+  margin-top: 1rem;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 1.25rem;
+  background: #ffffff;
+}
+
+.preview-card.approved {
+  border: 2px solid #10b981;
+  background: #ecfdf5;
+}
+
+.generating-badge {
+  color: #2563eb;
+  font-weight: 500;
+  font-size: 0.9rem;
+  padding: 0.25rem 0.5rem;
+  text-align: center;
+}
+
+.notice.success {
+  color: #059669;
+  font-weight: 500;
+}

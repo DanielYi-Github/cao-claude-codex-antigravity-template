@@ -7,7 +7,7 @@ name = "lyria-auto-publisher"
 version = "1.0.0"
 description = "Automated Lyria 3 music generation and YouTube publishing pipeline"
 readme = "README.md"
-requires-python = ">=3.11,<3.15"
+requires-python = ">=3.12,<3.15"
 dependencies = [
   "google-genai>=2.13.0,<3",
   "google-api-python-client>=2.0.0",

@@ -7,15 +7,21 @@
   },
   "2": {
     "class_type": "CLIPTextEncode",
+    "_meta": {
+      "note": "Default = stages.py's DEFAULT_KEYFRAME_PROMPT / chowchow-prompts.md scene 1, kept in sync manually. Replace with a different scene's full prompt (identity clause + setting) before queuing by hand -- do not leave this empty or the studio worker's runtime patch is the only thing standing between you and an unguided render."
+    },
     "inputs": {
-      "text": "",
+      "text": "A single chow chow dog, chowchow_mascot, fluffy reddish-brown fur, thick mane, black nose, sturdy compact build -- only one dog is visible in the frame, no duplicate or additional dogs. A fictional independent neighborhood cafe interior, no recognizable location. The dog lies flat on the wooden floor, head resting low on its front paws, eyes half-closed, calm and content posture. Beside the dog, a wooden chair is pulled out from a small table as if someone just sat down, a laptop on the table glowing softly, a ceramic coffee mug beside it with gentle steam rising -- the owner is implied by these objects but is completely out of frame, no person or human body part visible anywhere in the shot. Soft warm daylight through a nearby window, realistic wood and stone textures, documentary photography, photorealistic, physically plausible materials and lighting, locked-off camera, stable centered composition, no logos, no readable text, no identifiable people",
       "clip": ["8", 0]
     }
   },
   "3": {
     "class_type": "CLIPTextEncode",
+    "_meta": {
+      "note": "Inert under CFG=1 (schnell's native operating point) -- kept only for node-graph consistency with the other workflows. See stages.py's KEYFRAME_NEGATIVE_PROMPT."
+    },
     "inputs": {
-      "text": "",
+      "text": "blurry, low quality, worst quality, cartoon, illustration, CGI, 3D render, surreal, impossible geometry, unstable architecture, camera shake, zoom, fast camera movement, flicker, strobing, frozen motion, static motion, brand logo, trademark, readable sign, watermark, subtitle, text, celebrity, public figure, recognizable face, malformed hands, extra fingers, fused fingers, extra limbs, deformed face, bad anatomy, bad proportions, duplicate objects, oversaturated, overexposed, underexposed, cropped, out of frame",
       "clip": ["8", 0]
     }
   },

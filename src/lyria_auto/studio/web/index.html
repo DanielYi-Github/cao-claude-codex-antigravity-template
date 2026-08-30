@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <title>Lyria Studio</title>
 <link rel="stylesheet" href="/styles.css">
+<link rel="stylesheet" href="/tabs/tab2-motion.css">
 </head>
 <body>
 <h1>Lyria Studio</h1>
@@ -11,10 +12,14 @@
 <section id="episode-list-view">
   <div class="card">
     <h2>建立新集數</h2>
-    <input id="newSlug" placeholder="slug，例如 chowchow-001">
-    <input id="newTitle" placeholder="標題">
-    <button id="createEpisode">建立</button>
-    <div id="createNotice" class="notice"></div>
+    <div class="inline-form">
+      <label for="newSlug">Slug：</label>
+      <input id="newSlug" placeholder="例如 chowchow-001">
+      <label for="newTitle">標題：</label>
+      <input id="newTitle" placeholder="標題">
+      <button id="createEpisode">建立</button>
+    </div>
+    <div id="createNotice" class="notice" aria-live="polite"></div>
   </div>
   <div class="card">
     <h2>集數列表</h2>
@@ -25,13 +30,65 @@
 <section id="episode-detail-view" class="hidden">
   <button id="backToList">← 回列表</button>
   <h2 id="episodeTitle"></h2>
-  <div id="assetGroups"></div>
+
+  <div class="tabs">
+    <button class="tab-btn active" data-tab="1">1. 關鍵幀 (Keyframes)</button>
+    <button class="tab-btn" data-tab="2">2. 動作 (Motion)</button>
+    <button class="tab-btn" data-tab="3">3. 升頻 (Upscale)</button>
+    <button class="tab-btn" data-tab="4">4. 音樂 (Music)</button>
+    <button class="tab-btn" data-tab="5">5. 最終成片 (Final)</button>
+  </div>
+
+  <div id="tab-1" class="tab-content active">
+    <div class="card">
+      <h3>生成關鍵幀</h3>
+      <div class="form-group">
+        <label for="posPrompt">正向提示詞 (Positive Prompt):</label>
+        <textarea id="posPrompt" rows="4"></textarea>
+      </div>
+      <div class="form-group">
+        <label for="negPrompt">負向提示詞 (Negative Prompt):</label>
+        <textarea id="negPrompt" rows="2"></textarea>
+      </div>
+      <button id="generateKeyframes">Generate</button>
+      <button id="regenerateKeyframes" class="hidden">Regenerate All</button>
+      <div id="keyframeStatus" class="notice" aria-live="polite"></div>
+    </div>
+
+    <div class="card">
+      <h3>候選關鍵幀 (Candidates)</h3>
+      <div id="keyframe-grid" class="image-grid"></div>
+    </div>
+  </div>
+
+  <div id="tab-2" class="tab-content hidden card">
+    <h3>2. 動作 (Motion)</h3>
+    <p>此功能尚未實作</p>
+  </div>
+
+  <div id="tab-3" class="tab-content hidden card">
+    <h3>3. 升頻 (Upscale)</h3>
+    <p>此功能尚未實作</p>
+  </div>
+
+  <div id="tab-4" class="tab-content hidden card">
+    <h3>4. 音樂 (Music)</h3>
+    <p>此功能尚未實作</p>
+  </div>
+
+  <div id="tab-5" class="tab-content hidden card">
+    <h3>5. 最終成片 (Final)</h3>
+    <p>此功能尚未實作</p>
+  </div>
 </section>
 
-<div id="lightbox" class="lightbox hidden">
+<dialog id="lightbox" class="lightbox">
+  <form method="dialog">
+    <button class="close-btn" aria-label="關閉">×</button>
+  </form>
   <img id="lightboxImg" alt="放大檢視">
-</div>
+</dialog>
 
-<script src="/app.js"></script>
+<script type="module" src="/app.js"></script>
 </body>
 </html>

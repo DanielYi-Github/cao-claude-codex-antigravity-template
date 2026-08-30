@@ -52,9 +52,27 @@ class StudioWorker:
     def start(self) -> None:
         if self._thread is not None:
             return
+        self.recover_stale_tasks()
         self._stop.clear()
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
+
+    def recover_stale_tasks(self) -> int:
+        """Fail any task left at 'running' by a previous process.
+
+        Safe to assume orphaned rather than "still running elsewhere"
+        specifically because of this class's one-thread-one-task invariant
+        (see module docstring): if THIS process is starting up, nothing in
+        it could still be mid-handler on an already-running task. Without
+        this, a process crash (e.g. ComfyUI OOM) leaves the task stuck at
+        'running' forever, which as of studio-console-v2-plan.md Phase 1
+        also permanently 409s app.py's keyframe regenerate/approve guards
+        for that episode -- there'd be no way to ever try again.
+        """
+        stale = self._db.tasks_by_status("running")
+        for task in stale:
+            self._fail(task, "worker restarted while this task was still running -- retry")
+        return len(stale)
 
     def stop(self, *, timeout: float = 5.0) -> None:
         self._stop.set()

@@ -1,28 +1,51 @@
-body { font-family: system-ui, sans-serif; max-width: 1100px; margin: 2rem auto; padding: 0 1rem; background: #f9fafb; color: #111827; }
+body { font-family: system-ui, sans-serif; max-width: 1200px; margin: 2rem auto; padding: 0 1rem; background: #f9fafb; color: #111827; }
 h1 { font-size: 1.5rem; }
 .card { background: white; border-radius: 8px; padding: 1.25rem; margin-bottom: 1rem; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
-.hidden { display: none; }
-input { padding: 0.5rem; border-radius: 6px; border: 1px solid #d1d5db; margin-right: 0.5rem; }
-button { padding: 0.5rem 1rem; border: none; border-radius: 6px; cursor: pointer; font-size: 0.95rem; margin-right: 0.5rem; background: #3b82f6; color: white; }
+.hidden { display: none !important; }
+
+/* Forms */
+label { display: block; font-weight: 500; margin-bottom: 0.25rem; font-size: 0.95rem; }
+input, textarea { width: 100%; box-sizing: border-box; padding: 0.5rem; border-radius: 6px; border: 1px solid #d1d5db; margin-bottom: 0.5rem; font-family: inherit; }
+.form-group { margin-bottom: 1rem; }
+.inline-form { display: flex; gap: 0.5rem; align-items: center; margin-bottom: 0.5rem; flex-wrap: wrap; }
+.inline-form input { flex: 1; min-width: 150px; margin-bottom: 0; }
+.inline-form label { margin-bottom: 0; white-space: nowrap; }
+
+/* Buttons */
+button { padding: 0.5rem 1rem; border: none; border-radius: 6px; cursor: pointer; font-size: 0.95rem; background: #3b82f6; color: white; }
+button:disabled { opacity: 0.6; cursor: not-allowed; }
 button.reject { background: #ef4444; }
-button.approve { background: #10b981; }
+button.approve-btn { background: #10b981; width: 100%; margin-top: 0.5rem; }
+
+/* Tabs */
+.tabs { display: flex; gap: 0.5rem; margin-bottom: 1rem; border-bottom: 1px solid #e5e7eb; padding-bottom: 0.5rem; flex-wrap: wrap; }
+.tab-btn { background: #e5e7eb; color: #374151; font-weight: 500; }
+.tab-btn.active { background: #3b82f6; color: white; }
+.tab-content { padding-top: 0.5rem; }
+
+/* Episode List */
 .episode-row { padding: 0.75rem; border-bottom: 1px solid #e5e7eb; cursor: pointer; display: flex; gap: 0.75rem; align-items: center; }
 .episode-row:hover { background: #f3f4f6; }
+
+/* Badges & Text */
 .badge { background: #e5e7eb; border-radius: 999px; padding: 0.1rem 0.6rem; font-size: 0.8rem; }
 .muted { color: #6b7280; font-size: 0.85rem; }
 .error { color: #b91c1c; font-size: 0.85rem; }
 .notice { color: #b91c1c; min-height: 1.2em; margin-top: 0.5rem; }
-.asset-row { display: flex; flex-wrap: wrap; gap: 1rem; }
-.asset-card { border: 1px solid #e5e7eb; border-radius: 8px; padding: 0.75rem; width: 280px; }
-.asset-card img, .asset-card video { max-width: 100%; border-radius: 4px; margin: 0.5rem 0; }
-.asset-card img { cursor: zoom-in; }
-.asset-meta { display: flex; gap: 0.5rem; align-items: center; margin-bottom: 0.25rem; }
-.role { font-weight: 600; }
 
-.lightbox {
-  position: fixed; inset: 0; background: rgba(0, 0, 0, 0.85);
-  display: flex; align-items: center; justify-content: center;
-  padding: 2rem; cursor: zoom-out; z-index: 1000;
-}
-.lightbox.hidden { display: none; }
-.lightbox img { max-width: 100%; max-height: 100%; border-radius: 4px; }
+/* Image Grid */
+.image-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1rem; }
+.kf-card { border: 1px solid #e5e7eb; border-radius: 8px; padding: 0.75rem; display: flex; flex-direction: column; background: #fff; }
+.kf-card.approved { border: 2px solid #10b981; background: #ecfdf5; }
+.kf-img { width: 100%; height: auto; border-radius: 4px; margin: 0.5rem 0; cursor: zoom-in; object-fit: contain; }
+.placeholder-img { width: 100%; aspect-ratio: 16/9; background: #f3f4f6; display: flex; align-items: center; justify-content: center; color: #9ca3af; margin: 0.5rem 0; border-radius: 4px; }
+.kf-meta { display: flex; gap: 0.5rem; align-items: center; justify-content: space-between; }
+.approved-badge { color: #10b981; font-weight: bold; text-align: center; margin-top: 0.5rem; }
+.kf-actions { margin-top: auto; }
+
+/* Lightbox using native dialog */
+.lightbox { padding: 0; border: none; border-radius: 8px; background: transparent; max-width: 90vw; max-height: 90vh; }
+.lightbox::backdrop { background: rgba(0, 0, 0, 0.85); }
+.lightbox img { max-width: 90vw; max-height: 90vh; display: block; border-radius: 4px; }
+.close-btn { position: absolute; top: 1rem; right: 1rem; background: rgba(0,0,0,0.5); color: white; border: none; border-radius: 50%; width: 2rem; height: 2rem; padding: 0; display: flex; align-items: center; justify-content: center; font-size: 1.5rem; line-height: 1; cursor: pointer; }
+.close-btn:hover { background: rgba(0,0,0,0.8); }

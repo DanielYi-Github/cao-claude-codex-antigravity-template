@@ -52,7 +52,11 @@ class MigrationPreview:
     would_create_backup: bool
 
 
-SUPPORTED_PYTHON = ["python3.13", "python3.12", "python3.11"]
+# 3.11 dropped 2026-08-30: StateDB's migration atomicity fix uses
+# sqlite3.Connection.autocommit, a 3.12+ API (codex_reviewer found running
+# it on 3.11 raises AttributeError before migration completes -- see
+# docs/architecture/studio-console-v2-plan.md).
+SUPPORTED_PYTHON = ["python3.13", "python3.12"]
 
 
 def choose_python(path_dir: str | Path) -> str:
@@ -61,7 +65,7 @@ def choose_python(path_dir: str | Path) -> str:
         if (d / name).exists():
             return name
     raise RuntimeError(
-        "找不到 python3.11～3.13。執行: brew install python@3.11"
+        "找不到 python3.12～3.13。執行: brew install python@3.12"
     )
 
 

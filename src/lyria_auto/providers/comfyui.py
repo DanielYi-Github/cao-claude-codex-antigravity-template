@@ -112,15 +112,32 @@ class ComfyUIClient:
             pass
 
     def fetch_output(self, history_entry: dict[str, Any], dest: str | Path) -> Path:
-        dest = Path(dest)
+        items = self.fetch_all_outputs(history_entry)
+        return self._download(items[0], Path(dest))
+
+    def fetch_all_outputs(self, history_entry: dict[str, Any]) -> list[dict[str, Any]]:
+        """Every output file descriptor from a run, in order -- unlike
+        fetch_output, which only returns the first. Needed for a batched
+        SaveImage node (e.g. batch_size=12 keyframe candidates all coming
+        back from one submit()), where the caller wants every image, not
+        just one. Each item is the raw ComfyUI descriptor
+        (filename/subfolder/type); download it with download_output().
+        """
+        results = []
         for node_output in history_entry.get("outputs", {}).values():
             for items in node_output.values():
                 if not isinstance(items, list):
                     continue
                 for item in items:
                     if isinstance(item, dict) and "filename" in item:
-                        return self._download(item, dest)
-        raise GenerationError(f"ComfyUI 的輸出裡找不到檔案：{history_entry.get('outputs')}")
+                        results.append(item)
+        if not results:
+            raise GenerationError(f"ComfyUI 的輸出裡找不到檔案：{history_entry.get('outputs')}")
+        return results
+
+    def download_output(self, item: dict[str, Any], dest: str | Path) -> Path:
+        """Download one descriptor from fetch_all_outputs() to dest."""
+        return self._download(item, Path(dest))
 
     def _download(self, item: dict[str, Any], dest: Path) -> Path:
         params = {

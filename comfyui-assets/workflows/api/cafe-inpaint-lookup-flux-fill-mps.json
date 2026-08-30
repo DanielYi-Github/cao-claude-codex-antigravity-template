@@ -1,0 +1,129 @@
+{
+  "1": {
+    "class_type": "UnetLoaderGGUF",
+    "inputs": {
+      "unet_name": "flux1-fill-dev-Q4_K_S.gguf"
+    }
+  },
+  "2": {
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "note": "Was empty -- the masked region had zero text guidance during inpainting, which is a likely cause of it regenerating as a different breed/warped anatomy instead of a touched-up chow chow. This is the identity clause from chowchow-prompts.md; keep it and only append a short note about what should change inside the mask (e.g. 'paw resting flat, no distortion') if needed."
+    },
+    "inputs": {
+      "text": "A single chow chow dog, chowchow_mascot, fluffy reddish-brown fur, thick mane, black nose, sturdy compact build -- only one dog is visible in the frame, no duplicate or additional dogs, lying flat on the wooden cafe floor in the exact same pose and lighting as the rest of the image, photorealistic, physically plausible anatomy, seamlessly matching the surrounding scene",
+      "clip": ["8", 0]
+    }
+  },
+  "3": {
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "note": "Inert under CFG=1, kept for node-graph consistency. See stages.py's KEYFRAME_NEGATIVE_PROMPT."
+    },
+    "inputs": {
+      "text": "blurry, low quality, worst quality, cartoon, illustration, CGI, 3D render, surreal, impossible geometry, camera shake, flicker, watermark, text, celebrity, recognizable face, malformed hands, extra fingers, extra limbs, deformed face, bad anatomy, bad proportions, duplicate objects, second dog, different breed, oversaturated, overexposed, underexposed, cropped",
+      "clip": ["8", 0]
+    }
+  },
+  "5": {
+    "class_type": "KSampler",
+    "inputs": {
+      "seed": 20260900,
+      "steps": 20,
+      "cfg": 1,
+      "sampler_name": "euler",
+      "scheduler": "normal",
+      "denoise": 1,
+      "model": ["20", 0],
+      "positive": ["12", 0],
+      "negative": ["12", 1],
+      "latent_image": ["12", 2]
+    }
+  },
+  "6": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": ["5", 0],
+      "vae": ["9", 0]
+    }
+  },
+  "7": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "filename_prefix": "cafe-inpaint-lookup/img",
+      "images": ["6", 0]
+    }
+  },
+  "8": {
+    "class_type": "DualCLIPLoaderGGUF",
+    "inputs": {
+      "clip_name1": "clip_l.safetensors",
+      "clip_name2": "t5-v1_1-xxl-encoder-Q4_K_S.gguf",
+      "type": "flux"
+    }
+  },
+  "9": {
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "ae.safetensors"
+    }
+  },
+  "11": {
+    "class_type": "LoadImage",
+    "_meta": {
+      "note": "Placeholder filename from a one-off session (2026-08-30, picking candidate #7 from chowchow-v2lora-16). This workflow is a manual per-use tool, not driven by stages.py -- stage your current candidate image in ComfyUI's input/ dir and point this node at it before every queue."
+    },
+    "inputs": {
+      "image": "chowchow_scene_lock_img7.png"
+    }
+  },
+  "13": {
+    "class_type": "LoadImageMask",
+    "_meta": {
+      "note": "Same placeholder caveat as node 11 -- point at your current mask. Draw it as tight as possible around the actual defect; node 15's GrowMask erosion is a safety margin, not a substitute for a tight brush stroke (a mask painted over the whole subject stays mostly the whole subject even after erosion)."
+    },
+    "inputs": {
+      "image": "chowchow_scene_lock_img7_mask.png",
+      "channel": "red"
+    }
+  },
+  "15": {
+    "class_type": "GrowMask",
+    "_meta": {
+      "note": "2026-08-30 fix: the mask actually used here covered ~41% of the frame (nearly the whole dog + surrounding floor/furniture) instead of a small local area, so denoise=1 was regenerating almost the entire subject. Negative expand erodes the mask inward by this many pixels before inpainting -- codex_reviewer measured that on that specific ~701x401px mask, -60 only gets down to ~581x281px (still ~18% of the frame), because eroding a whole-subject-sized mask converges toward a useless sliver long before it converges toward a properly local patch. This node is a seam-margin safety net, NOT a substitute for drawing a tight mask around the actual defect in ComfyUI's mask editor -- that redraw is still required every time."
+    },
+    "inputs": {
+      "mask": ["13", 0],
+      "expand": -60,
+      "tapered_corners": true
+    }
+  },
+  "14": {
+    "class_type": "FluxGuidance",
+    "inputs": {
+      "conditioning": ["2", 0],
+      "guidance": 30
+    }
+  },
+  "12": {
+    "class_type": "InpaintModelConditioning",
+    "inputs": {
+      "positive": ["14", 0],
+      "negative": ["3", 0],
+      "vae": ["9", 0],
+      "pixels": ["11", 0],
+      "mask": ["15", 0],
+      "noise_mask": true
+    }
+  },
+  "20": {
+    "class_type": "LoraLoader",
+    "inputs": {
+      "lora_name": "chowchow-identity-v2.safetensors",
+      "strength_model": 0.65,
+      "strength_clip": 0,
+      "model": ["1", 0],
+      "clip": ["8", 0]
+    }
+  }
+}

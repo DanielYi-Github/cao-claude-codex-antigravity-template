@@ -62,6 +62,12 @@ studio:
   comfyui_remote_base_url: ''
   chowchow_reference_path: comfyui-assets/character-reference/chowchow/approved/master-lying-transparent-v1.png
   comfyui_workflows_dir: comfyui-assets/workflows/api
+  # 12-in-one-submission at 1280x720 is UNTESTED on real hardware -- the
+  # checked-in workflow's own default is 4, and comfyui-assets/README.md
+  # documents 4-at-1280x720 already pushing memory/time above a single
+  # image. If a real run OOMs or times out, lower this (e.g. to 4) rather
+  # than assuming the code is wrong -- studio-console-v2-plan.md.
+  keyframe_batch_size: 12
 video:
   audio_bitrate: 256k
   background_directory: assets/backgrounds

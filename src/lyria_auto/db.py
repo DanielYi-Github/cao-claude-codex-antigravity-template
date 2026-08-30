@@ -342,6 +342,111 @@ CREATE INDEX IF NOT EXISTS idx_studio_tasks_status
 ON studio_tasks(status, id);
 """
 
+STUDIO_PRODUCTION_MIGRATION_ID = "0003_studio_production"
+
+# Adds the asset kinds / task types the 5-tab console needs (studio-console-
+# v2-plan.md): a low-res 7x-sleep+1x-lookup preview loop distinct from the
+# existing 1080p 'loop', 12 per-episode music tracks, and an optional mixed-
+# and-extended music_mix asset so the ~1hr mix is independently reviewable
+# instead of being recomputed inline during render_final. SQLite can't ALTER
+# a CHECK constraint, so this rebuilds both tables (temp copy -> drop ->
+# rename) rather than editing STUDIO_SCHEMA_SQL in place -- editing that SQL
+# string directly would change its checksum and make _apply_simple_migration
+# raise MigrationInvariantError against every database that already applied
+# 0002_studio_foundation.
+#
+# The CHECK constraint only enforces "music_track rows have a track_id and
+# nothing else does" -- it cannot express "that track_id's job_id equals
+# this episode's music_job_id" (SQLite CHECK can't reference other tables).
+# That cross-episode ownership rule belongs in whatever Phase 4 method
+# creates music_track assets (studio-console-v2-plan.md), not here.
+STUDIO_PRODUCTION_MIGRATION_SQL = """
+CREATE TABLE episode_assets_v3 (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  episode_id INTEGER NOT NULL,
+  kind TEXT NOT NULL CHECK(kind IN (
+    'keyframe','motion_test','clip','clip_1080p',
+    'loop_preview','loop','music_track','music_mix','final'
+  )),
+  role TEXT NOT NULL CHECK(role IN ('shared','sleep','lookup')),
+  variant_index INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL CHECK(status IN (
+    'queued','running','ready','awaiting_review','approved','rejected','superseded','failed'
+  )),
+  path TEXT,
+  sha256 TEXT,
+  width INTEGER,
+  height INTEGER,
+  duration_seconds REAL,
+  fps REAL,
+  source_prompt TEXT,
+  source_seed INTEGER,
+  comfyui_prompt_id TEXT,
+  parent_asset_id INTEGER,
+  track_id INTEGER,
+  error TEXT,
+  state_version INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY(episode_id) REFERENCES episodes(id),
+  FOREIGN KEY(parent_asset_id) REFERENCES episode_assets(id),
+  FOREIGN KEY(track_id) REFERENCES tracks(id),
+  CHECK(
+    (kind = 'music_track' AND track_id IS NOT NULL)
+    OR
+    (kind <> 'music_track' AND track_id IS NULL)
+  )
+);
+INSERT INTO episode_assets_v3 (
+  id, episode_id, kind, role, variant_index, status, path, sha256,
+  width, height, duration_seconds, fps, source_prompt, source_seed,
+  comfyui_prompt_id, parent_asset_id, track_id, error, state_version,
+  created_at, updated_at
+)
+SELECT
+  id, episode_id, kind, role, variant_index, status, path, sha256,
+  width, height, duration_seconds, fps, source_prompt, source_seed,
+  comfyui_prompt_id, parent_asset_id, NULL, error, state_version,
+  created_at, updated_at
+FROM episode_assets;
+DROP TABLE episode_assets;
+ALTER TABLE episode_assets_v3 RENAME TO episode_assets;
+CREATE INDEX IF NOT EXISTS idx_episode_assets_episode
+ON episode_assets(episode_id, kind, role);
+
+CREATE TABLE studio_tasks_v3 (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  episode_id INTEGER NOT NULL,
+  asset_id INTEGER,
+  task_type TEXT NOT NULL CHECK(task_type IN (
+    'generate_keyframe','generate_motion_test','generate_clip',
+    'upscale_clip','build_loop_preview','build_loop',
+    'generate_music_tracks','build_music_mix','render_final'
+  )),
+  status TEXT NOT NULL CHECK(status IN ('queued','running','done','failed')),
+  payload_json TEXT,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  error TEXT,
+  created_at TEXT NOT NULL,
+  started_at TEXT,
+  finished_at TEXT,
+  FOREIGN KEY(episode_id) REFERENCES episodes(id),
+  FOREIGN KEY(asset_id) REFERENCES episode_assets(id)
+);
+INSERT INTO studio_tasks_v3 (
+  id, episode_id, asset_id, task_type, status, payload_json,
+  attempts, error, created_at, started_at, finished_at
+)
+SELECT
+  id, episode_id, asset_id, task_type, status, payload_json,
+  attempts, error, created_at, started_at, finished_at
+FROM studio_tasks;
+DROP TABLE studio_tasks;
+ALTER TABLE studio_tasks_v3 RENAME TO studio_tasks;
+CREATE INDEX IF NOT EXISTS idx_studio_tasks_status
+ON studio_tasks(status, id);
+"""
+
 # Valid job statuses for migration validation
 VALID_JOB_STATUSES = {
     "created", "planning", "planned", "generating",
@@ -355,6 +460,18 @@ VALID_VIDEO_STATUSES = {
     "planned", "dry_run", "rendering", "rendered", "uploading", "uploaded",
 }
 
+# studio_tasks.task_type values whose handler (src/lyria_auto/studio/
+# stages.py) creates its own episode_assets row(s) from scratch instead of
+# filling in a caller-supplied placeholder -- enqueue_task() rejects a
+# non-null asset_id for these, see the guard below. render_final has no
+# HTTP-reachable enqueue path yet (Phase 5), but belongs in this set for
+# the same reason as the other three -- codex_reviewer's Phase 2 review
+# reproduced enqueue_task(..., "render_final", asset_id=...) being silently
+# accepted, leaving that placeholder stuck at "running" once claimed.
+_SELF_CREATING_TASK_TYPES = {
+    "generate_keyframe", "build_loop_preview", "build_loop", "render_final",
+}
+
 
 class StateDB:
     def __init__(self, path: str | Path):
@@ -362,6 +479,14 @@ class StateDB:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(self.path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
+        # Declared FKs (episode_assets.episode_id/parent_asset_id/track_id,
+        # studio_tasks.episode_id/asset_id, tracks.job_id, ...) were pure
+        # documentation until now -- SQLite does not enforce them unless this
+        # pragma is set, and it must be set outside any transaction to take
+        # effect, so this has to happen before executescript(SCHEMA) opens
+        # one. codex_reviewer verified this was previously a no-op (a
+        # music_track row with a nonexistent track_id inserted successfully).
+        self.conn.execute("PRAGMA foreign_keys=ON")
         self.conn.executescript(SCHEMA)
         self._run_migrations()
         self.conn.commit()
@@ -433,8 +558,19 @@ class StateDB:
         # new tables only -- so it uses the plain checksum-tracked apply
         # instead of repeating the jobs/videos validation dance above.
         self._apply_simple_migration(STUDIO_SCHEMA_MIGRATION_ID, STUDIO_SCHEMA_SQL)
+        # Must run after 0002: rebuilds the two tables 0002 just created (or
+        # confirmed exist) to widen their CHECK constraints. Safe to run
+        # against either a brand-new empty database or one with real rows --
+        # it's a copy-then-rename, not an in-place ALTER.
+        self._apply_simple_migration(
+            STUDIO_PRODUCTION_MIGRATION_ID,
+            STUDIO_PRODUCTION_MIGRATION_SQL,
+            rebuilds_referenced_tables=True,
+        )
 
-    def _apply_simple_migration(self, migration_id: str, sql: str) -> None:
+    def _apply_simple_migration(
+        self, migration_id: str, sql: str, *, rebuilds_referenced_tables: bool = False
+    ) -> None:
         checksum = hashlib.sha256(sql.encode("utf-8")).hexdigest()
         existing = self.conn.execute(
             "SELECT checksum FROM schema_migrations WHERE id=?", (migration_id,)
@@ -446,8 +582,52 @@ class StateDB:
                 f"Migration {migration_id} checksum mismatch; "
                 "schema may have changed since last apply"
             )
+        # executescript() implicitly commits before running, and under the
+        # default (legacy) isolation mode each DDL statement inside it also
+        # implicitly commits whatever came before -- so a failure partway
+        # through a multi-statement rebuild (e.g. 0003's drop-and-rename)
+        # cannot be rolled back by the except branch below; it would leave
+        # the database in a half-migrated state needing manual repair.
+        # autocommit=False (Python 3.12+) disables that per-statement
+        # implicit commit, so plain execute() calls -- DDL included --
+        # participate in one real transaction that commit()/rollback() can
+        # act on, the same way running these statements via the sqlite3 CLI
+        # inside an explicit BEGIN/COMMIT would.
+        #
+        # rebuilds_referenced_tables=True (0003 needs this, 0002 doesn't):
+        # DROP TABLE on a table another live table still FK-references fails
+        # with foreign_keys=ON (verified empirically -- studio_tasks.asset_id
+        # -> episode_assets(id) blocks dropping the old episode_assets).
+        # PRAGMA foreign_keys is also a documented no-op while a transaction
+        # is open, so it must be toggled OFF before autocommit=False starts
+        # one, and back ON only after that transaction ends -- not inside
+        # the try block below. PRAGMA foreign_key_check has no such
+        # restriction (it's a plain read of current state, not an
+        # enforcement toggle) and runs from *inside* the transaction, before
+        # the schema_migrations insert and commit: codex_reviewer flagged
+        # that running it after commit (as an earlier version of this code
+        # did) meant a discovered orphan would raise, but 0003 would already
+        # be recorded as applied -- a future startup would then skip
+        # re-running it and silently leave the orphan unresolved forever.
+        # Checking first means a real orphan aborts the whole transaction,
+        # exactly like any other migration failure.
+        if rebuilds_referenced_tables:
+            self.conn.execute("PRAGMA foreign_keys=OFF")
+        previous_autocommit = self.conn.autocommit
+        self.conn.autocommit = False
         try:
-            self.conn.executescript(sql)
+            for statement in sql.split(";"):
+                statement = statement.strip()
+                if statement:
+                    self.conn.execute(statement)
+            if rebuilds_referenced_tables:
+                orphans = self.conn.execute("PRAGMA foreign_key_check").fetchall()
+                if orphans:
+                    raise MigrationInvariantError(
+                        f"Migration {migration_id} would leave {len(orphans)} "
+                        f"orphaned foreign-key reference(s): "
+                        f"{[tuple(row) for row in orphans]}"
+                    )
             self.conn.execute(
                 "INSERT INTO schema_migrations(id, checksum, applied_at) VALUES(?,?,?)",
                 (migration_id, checksum, utc_now_iso()),
@@ -456,6 +636,21 @@ class StateDB:
         except Exception:
             self.conn.rollback()
             raise
+        finally:
+            self.conn.autocommit = previous_autocommit
+            # autocommit=False keeps a transaction continuously open --
+            # commit() (or rollback()) ends one and immediately starts the
+            # next rather than leaving the connection idle -- so
+            # in_transaction is still True here even right after a commit.
+            # PRAGMA foreign_keys is a silent no-op inside any open
+            # transaction, so without this the PRAGMA below would appear to
+            # succeed but leave enforcement off (found empirically:
+            # restoring autocommit alone was not enough, foreign_keys stayed
+            # 0 after an explicit "=ON").
+            if self.conn.in_transaction:
+                self.conn.commit()
+            if rebuilds_referenced_tables:
+                self.conn.execute("PRAGMA foreign_keys=ON")
 
     def close(self) -> None:
         self.conn.close()
@@ -1034,6 +1229,55 @@ class StateDB:
         self.conn.commit()
         return changed == 1
 
+    def supersede_assets(self, episode_id: int, kind: str, role: str) -> int:
+        """Mark every non-terminal asset of this kind/role as superseded.
+
+        Used before a fresh batch (e.g. 12 new keyframe candidates) replaces
+        whatever candidates existed before, so stale awaiting_review rows
+        don't linger in the UI next to the new batch. Already-terminal rows
+        (approved/rejected/failed/already-superseded) are left alone -- in
+        particular this is safe to call right after approving one candidate
+        from a batch, since the approved row's status is no longer one of
+        the ones matched here.
+        """
+        now = utc_now_iso()
+        cur = self.conn.execute(
+            """
+            UPDATE episode_assets
+            SET status='superseded', updated_at=?, state_version=state_version+1
+            WHERE episode_id=? AND kind=? AND role=?
+              AND status IN ('queued','running','ready','awaiting_review')
+            """,
+            (now, episode_id, kind, role),
+        )
+        self.conn.commit()
+        return cur.rowcount
+
+    def next_variant_index(self, episode_id: int, kind: str, role: str) -> int:
+        """The next variant_index for a fresh batch, continuing past every
+        attempt ever made (including superseded/rejected ones) rather than
+        resetting to 0 -- a reset would let two batches collide on the same
+        (episode, kind, role, variant_index) row identity (the index isn't
+        DB-unique) and, worse, on the same output filename on disk, so a
+        superseded row's artifact would silently start serving the new
+        batch's image instead of the one it was actually reviewed with.
+
+        NOT atomic across independent connections: this read and the
+        later create_asset() writes are separate statements, not one
+        transaction. Safe today only because cli.py starts exactly one
+        StudioWorker thread that serializes handler execution end to end
+        (see worker.py's module docstring) -- two worker PROCESSES reading
+        this concurrently would both compute the same MAX+1 and collide.
+        If a second worker process is ever added, this needs a reservation
+        table or an atomic UPDATE...RETURNING-style counter instead.
+        """
+        row = self.conn.execute(
+            "SELECT MAX(variant_index) AS m FROM episode_assets "
+            "WHERE episode_id=? AND kind=? AND role=?",
+            (episode_id, kind, role),
+        ).fetchone()
+        return (row["m"] + 1) if row["m"] is not None else 0
+
     def enqueue_task(
         self,
         episode_id: int,
@@ -1042,6 +1286,15 @@ class StateDB:
         asset_id: int | None = None,
         payload: dict[str, Any] | None = None,
     ) -> int:
+        if task_type in _SELF_CREATING_TASK_TYPES and asset_id is not None:
+            # These handlers all create their own asset row(s) from scratch
+            # (see stages.py) and never read task["asset_id"] -- a non-null
+            # asset_id here would create a placeholder row the handler can
+            # never fill in, stuck at "running" forever once claimed.
+            raise ValueError(
+                f"{task_type} tasks don't take asset_id -- "
+                "the handler creates its own asset row(s)"
+            )
         now = utc_now_iso()
         cur = self.conn.execute(
             """
@@ -1062,6 +1315,11 @@ class StateDB:
     def tasks_for_episode(self, episode_id: int) -> list[sqlite3.Row]:
         return self.conn.execute(
             "SELECT * FROM studio_tasks WHERE episode_id=? ORDER BY id", (episode_id,)
+        ).fetchall()
+
+    def tasks_by_status(self, status: str) -> list[sqlite3.Row]:
+        return self.conn.execute(
+            "SELECT * FROM studio_tasks WHERE status=? ORDER BY id", (status,)
         ).fetchall()
 
     def claim_next_task(self) -> sqlite3.Row | None:
