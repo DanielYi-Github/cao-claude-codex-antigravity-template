@@ -1,8 +1,8 @@
 """Kaggle kernel 進入點：訓練松獅犬吉祥物角色 LoRA。
 透過 kernel-metadata.json 的 dataset_sources 掛載：
-- danielyiyi/chowchow-mascot-lora-dataset-v2（39 張真實生活照/影片截圖 + caption，
-  取代第一版的 18 張。v1 練出來的結果人工審核後不夠像本人，換上新拍的一批照片＋
-  舊照片裡挑出來的獨特情境，角度/場地/姿勢的多樣性都比 v1 高不少）
+- danielyiyi/chowchow-mascot-lora-dataset-v3（26 張精選真實照片 + 統一 caption；
+  以第一批較蓬鬆、可愛的身份外觀為主，第二批只補完整側面、背面、尾巴和趴姿，
+  移除人體遮擋、配件與同一場景的近重複照片）
 
 用 ai-toolkit（https://github.com/ostris/ai-toolkit）訓練。原本走
 FLUX.1-schnell + 官方 assistant adapter（ostris/FLUX.1-schnell-training
@@ -76,9 +76,9 @@ T4 只有 16GB VRAM，`patch_ai_toolkit_for_t4()` 修了三個 ai-toolkit 本身
    訓練時梯度需要真的穿過凍結的量化層才能傳到上游的 LoRA adapter，把那裡
    包死會直接讓訓練本身壞掉。
 5. **v24 在 12 小時 Kaggle session 上限內只跑到 1147/2000 步就被強制中斷**：
-   這次資料量從 18 張增加到 39 張（見上方 dataset_sources 說明），快取階段
-   （cache_latents / cache_text_embeddings）時間會等比例拉長，但每一步訓練
-   的實際運算時間跟資料集大小無關，還是原本量到的 35.5 秒/步。與其再賭一次
+   v2 曾從 18 張增加到 39 張，快取階段（cache_latents /
+   cache_text_embeddings）時間跟著拉長；v3 改成 26 張精選照片，會縮短快取，
+   但每一步訓練的實際運算時間仍主要由模型決定。與其再賭一次
    2000 步會不會又被腰斬在某個中間值，這版直接把 `steps` 設成 **1000**——
    剛好對齊 `save_every: 500` 的存檔點（第 500、1000 步都會存檔），也是 v24
    已經實測過「跑得到、存得下、生出來的預覽圖有效」的步數，抓起來全部跑完
@@ -94,8 +94,8 @@ import sys
 
 AI_TOOLKIT_DIR = "/kaggle/working/ai-toolkit"
 CONFIG_PATH = "/kaggle/working/chowchow_lora_config.yaml"
-OUTPUT_NAME = "chowchow_mascot_v2"
-FINAL_SAFETENSORS = "/kaggle/working/chowchow-identity-v2.safetensors"
+OUTPUT_NAME = "chowchow_mascot_v3"
+FINAL_SAFETENSORS = "/kaggle/working/chowchow-identity-v3.safetensors"
 
 CONFIG_YAML = """
 job: extension
@@ -626,10 +626,10 @@ def main():
     os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
     print(f"PYTORCH_CUDA_ALLOC_CONF={os.environ['PYTORCH_CUDA_ALLOC_CONF']!r}")
 
-    dataset_dir_readonly = find_dir("/kaggle/input/**/chowchow-mascot-lora-dataset-v2*")
+    dataset_dir_readonly = find_dir("/kaggle/input/**/chowchow-mascot-lora-dataset-v3*")
     # /kaggle/input is read-only; ai-toolkit writes a .aitk_size.json cache
     # file straight into folder_path, so it needs a writable copy.
-    dataset_dir = "/kaggle/working/chowchow-mascot-lora-dataset-v2"
+    dataset_dir = "/kaggle/working/chowchow-mascot-lora-dataset-v3"
     if not os.path.isdir(dataset_dir):
         shutil.copytree(dataset_dir_readonly, dataset_dir)
     print(f"dataset_dir = {dataset_dir} (writable copy of {dataset_dir_readonly})")

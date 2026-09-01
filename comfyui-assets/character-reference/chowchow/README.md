@@ -76,6 +76,19 @@ ESRGAN 後製升頻到 1080p
 - 先核准一張關鍵幀，再用它驅動後續動作，不在影片階段重新生成狗狗外觀
 - 每次生成後人工檢查臉部花紋、鬃毛、體型與尾巴——LoRA 不保證每次都 100% 沒有漂移，跟角色設定圖比對是必要的複檢步驟
 
+## 建立 LoRA v3 私有資料集
+
+v3 的可追蹤選片清單在 `lora-training-set-v3-manifest.json`；照片本身仍位於
+被 Git 忽略的 `source/`。在專案根目錄執行：
+
+```bash
+python3 comfyui-assets/scripts/build_chowchow_lora_dataset_v3.py
+```
+
+腳本會建立 `source/lora-training-set-v3/`，複製 26 張精選照片並產生統一的
+身份 caption。若要重新建立，使用 `--force`。完成後將該目錄上傳成私有 Kaggle
+dataset `danielyiyi/chowchow-mascot-lora-dataset-v3`，再推送訓練 kernel。
+
 ## 暫不放進這個目錄的東西
 
 - 不要把多隻狗混在同一批身份參考裡。

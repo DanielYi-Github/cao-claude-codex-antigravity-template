@@ -1,0 +1,34 @@
+{
+  "dataset_id": "danielyiyi/chowchow-mascot-lora-dataset-v3",
+  "output_directory": "lora-training-set-v3",
+  "identity_prefix": "chowchow_mascot, one adult chow chow dog, warm reddish-golden coat, broad round head, short wide muzzle, small rounded triangular ears, compact heavy body, short sturdy legs, thick curled tail",
+  "images": [
+    {"source_set":"lora-training-set","file":"car-ride-backlit-3q.jpg","description":"three-quarter head and shoulders view inside a car, mouth open, bright backlight"},
+    {"source_set":"lora-training-set","file":"car-ride-closeup-3q.jpg","description":"close three-quarter portrait looking forward in daylight"},
+    {"source_set":"lora-training-set","file":"car-ride-profile-alert.jpg","description":"clear side-profile portrait, alert posture, looking toward a window"},
+    {"source_set":"lora-training-set","file":"couch-sitting-happy.jpg","description":"sitting upright on a couch, three-quarter view, mouth open"},
+    {"source_set":"lora-training-set","file":"couch-sitting-headdown.jpg","description":"sitting upright on a couch, front view, head lowered slightly"},
+    {"source_set":"lora-training-set","file":"couch-sitting-profile.jpg","description":"sitting upright on a couch with head turned to a side profile"},
+    {"source_set":"lora-training-set","file":"floor-distant-walking.jpg","description":"full body walking toward the camera indoors, all four legs visible"},
+    {"source_set":"lora-training-set","file":"floor-entrance-standing.jpg","description":"full body standing indoors, front three-quarter view"},
+    {"source_set":"lora-training-set","file":"floor-lying-closeup-tongue.jpg","description":"lying down in front view with two separate front paws, mouth open and blue-purple tongue visible"},
+    {"source_set":"lora-training-set","file":"floor-sitting-tongue-clear.jpg","description":"full body sitting in a symmetric front view, mouth open and blue-purple tongue visible"},
+    {"source_set":"lora-training-set","file":"floor-standing-front.jpg","description":"full body standing in a front view, short sturdy legs and curled tail visible"},
+    {"source_set":"lora-training-set","file":"indoor-sitting-tongue-front.jpg","description":"sitting indoors in a front view, mouth open and blue-purple tongue visible"},
+    {"source_set":"lora-training-set","file":"indoor-sitting-tongue-tilt.jpg","description":"sitting indoors in a front three-quarter view with head tilted"},
+    {"source_set":"lora-training-set","file":"outdoor-flowerfield-profile.jpg","description":"side-profile portrait outdoors in natural daylight"},
+
+    {"source_set":"lora-training-set-v2","file":"IMG_0965-frame-closeup.jpg","description":"close front portrait, mouth open and blue-purple tongue visible"},
+    {"source_set":"lora-training-set-v2","file":"IMG_2397.jpg","description":"full body standing in a clear front view, neutral expression"},
+    {"source_set":"lora-training-set-v2","file":"IMG_2400.jpg","description":"full body rear view, back and thick curled tail clearly visible"},
+    {"source_set":"lora-training-set-v2","file":"IMG_2403.jpg","description":"full body rear three-quarter view with curled tail visible"},
+    {"source_set":"lora-training-set-v2","file":"IMG_2406.jpg","description":"complete full body side view while standing, four legs and curled tail clearly visible"},
+    {"source_set":"lora-training-set-v2","file":"IMG_2415.jpg","description":"complete full body lying in a three-quarter side view, front paws separated"},
+    {"source_set":"lora-training-set-v2","file":"IMG_2420.jpg","description":"lying in a low front three-quarter view with head resting between two separate front paws"},
+    {"source_set":"lora-training-set-v2","file":"IMG_2430.jpg","description":"lying in a low front view with two separate extended front paws, blue-purple tongue visible"},
+    {"source_set":"lora-training-set-v2","file":"IMG_2440.jpg","description":"full body sitting upright indoors in a front view"},
+    {"source_set":"lora-training-set-v2","file":"IMG_2452.jpg","description":"sitting indoors in a three-quarter view with head turned to the side"},
+    {"source_set":"lora-training-set-v2","file":"IMG_2459.jpg","description":"sitting indoors in a calm front view with mouth closed"},
+    {"source_set":"lora-training-set-v2","file":"IMG_2464.jpg","description":"lying flat indoors with head low and two separate front paws visible"}
+  ]
+}
