@@ -266,7 +266,7 @@ class ValidateProjectTests(unittest.TestCase):
             errors = validate_project(root)
 
             self.assertTrue(
-                any("lora_name must be chowchow-identity-v2.safetensors" in error for error in errors),
+                any("lora_name must be chowchow-identity-v3.safetensors" in error for error in errors),
                 errors,
             )
 

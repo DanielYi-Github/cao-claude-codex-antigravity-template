@@ -119,7 +119,7 @@
   "20": {
     "class_type": "LoraLoader",
     "inputs": {
-      "lora_name": "chowchow-identity-v2.safetensors",
+      "lora_name": "chowchow-identity-v3.safetensors",
       "strength_model": 0.65,
       "strength_clip": 0,
       "model": ["1", 0],

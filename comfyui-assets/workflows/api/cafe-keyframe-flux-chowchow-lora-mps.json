@@ -11,7 +11,7 @@
       "note": "Default = stages.py's DEFAULT_KEYFRAME_PROMPT / chowchow-prompts.md scene 1, kept in sync manually. Replace with a different scene's full prompt (identity clause + setting) before queuing by hand -- do not leave this empty or the studio worker's runtime patch is the only thing standing between you and an unguided render."
     },
     "inputs": {
-      "text": "A single chow chow dog, chowchow_mascot, fluffy reddish-brown fur, thick mane, black nose, sturdy compact build -- only one dog is visible in the frame, no duplicate or additional dogs. A fictional independent neighborhood cafe interior, no recognizable location. The dog lies flat on the wooden floor, head resting low on its front paws, eyes half-closed, calm and content posture. Beside the dog, a wooden chair is pulled out from a small table as if someone just sat down, a laptop on the table glowing softly, a ceramic coffee mug beside it with gentle steam rising -- the owner is implied by these objects but is completely out of frame, no person or human body part visible anywhere in the shot. Soft warm daylight through a nearby window, realistic wood and stone textures, documentary photography, photorealistic, physically plausible materials and lighting, locked-off camera, stable centered composition, no logos, no readable text, no identifiable people",
+      "text": "Documentary photograph inside a warm fictional independent neighborhood cafe. Exactly one adult chow chow dog, chowchow_mascot, with fluffy reddish-brown fur, thick rounded mane, black nose, small triangular ears, and a sturdy compact body. The dog's entire body is clearly visible and unobstructed in a natural three-quarter side view. It lies in a relaxed sphinx pose on an open area of wooden floor, with exactly two separate parallel front paws extending forward, four anatomically correct legs total, and one curled tail resting above the left hip. No furniture overlaps or hides the dog. A small wooden cafe table, plain closed laptop, ceramic mug, shelves, and plants remain in the background. No people or human body parts. Warm window daylight, realistic fur and materials, 35mm eye-level wide shot, stable centered composition, no logos, no readable text.",
       "clip": ["8", 0]
     }
   },
@@ -82,8 +82,8 @@
       "note": "Node id 20 is intentionally not 10: stages.py's generate_keyframe() has a `if \"10\" in workflow` branch that assumes node 10 is the composite workflow's character-cutout LoadImage node and patches an `image` field onto it. Keeping this LoRA loader off id 10 lets that branch correctly no-op for this workflow instead of misfiring."
     },
     "inputs": {
-      "lora_name": "chowchow-identity-v2.safetensors",
-      "strength_model": 0.65,
+      "lora_name": "chowchow-identity-v3.safetensors",
+      "strength_model": 0.35,
       "strength_clip": 0,
       "model": ["1", 0],
       "clip": ["8", 0]

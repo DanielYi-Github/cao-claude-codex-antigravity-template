@@ -89,6 +89,18 @@ python3 comfyui-assets/scripts/build_chowchow_lora_dataset_v3.py
 身份 caption。若要重新建立，使用 `--force`。完成後將該目錄上傳成私有 Kaggle
 dataset `danielyiyi/chowchow-mascot-lora-dataset-v3`，再推送訓練 kernel。
 
+2026-09-02 的 v3 訓練已在 Kaggle 完成 1,000 steps，輸出檔名為
+`chowchow-identity-v3.safetensors`。本機固定 8-seed 壓力測試比較 v2 0.50 與
+v3 0.35／0.50／0.65 後，關鍵幀預設採用 v3 0.35；較高強度偶爾會把收起的後腳
+畫成視覺上像額外肢體。預設 prompt 也要求狗狗全身不被家具遮住、採明確三分之四
+側面趴姿，讓產生候選圖時更容易做解剖檢查。
+
+目前 MPS 關鍵幀仍使用 `flux1-schnell-Q4_K_S.gguf`，但 v3 LoRA 是以 FLUX.1-dev
+訓練；這是已知的底模不匹配。上述 0.35 是目前 Schnell fallback 的實測設定，並不
+代表完全解決底模相容性。要追求更高的角色一致性，下一步應安裝可接受授權條款的
+FLUX.1-dev 基礎模型，另建 dev workflow 後重新做相同 seed 的 A/B，不能直接把目前
+workflow 的檔名改成 dev 就宣稱完成。
+
 ## 暫不放進這個目錄的東西
 
 - 不要把多隻狗混在同一批身份參考裡。

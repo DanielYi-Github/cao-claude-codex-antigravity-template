@@ -66,7 +66,7 @@ API_CHOWCHOW_LORA_KEYFRAME_NAME = "cafe-keyframe-flux-chowchow-lora-mps.json"
 API_CHOWCHOW_COMPOSITE_KEYFRAME_NAME = "cafe-keyframe-flux-chowchow-composite-mps.json"
 API_GENERATION_WORKFLOW_NAME = "cafe-flf2v-wan22-mps.json"
 API_UPSCALE_WORKFLOW_NAME = "cafe-upscale-1080p-mps.json"
-EXPECTED_CHOWCHOW_LORA_MODEL = "chowchow-identity-v2.safetensors"
+EXPECTED_CHOWCHOW_LORA_MODEL = "chowchow-identity-v3.safetensors"
 # stages.py's generate_keyframe() special-cases `if "10" in workflow` to patch
 # a character-cutout image into the composite path only; if this id drifts,
 # that runtime patch silently stops firing instead of erroring.

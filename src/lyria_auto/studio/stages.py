@@ -54,8 +54,8 @@ UPSCALE_WORKFLOW = "cafe-upscale-1080p-mps.json"
 # real cutout got pasted on top; the LoRA workflow draws the dog on purpose,
 # so that exclusion doesn't apply here anymore. Guarding against duplicate
 # dogs now happens the same way "no person in frame" already does -- via
-# explicit positive-prompt wording (see DEFAULT_KEYFRAME_PROMPT's "only one
-# dog" clause), since CFG=1 makes negative prompts inert either way.
+# explicit positive-prompt wording (see DEFAULT_KEYFRAME_PROMPT's "Exactly one"
+# clause), since CFG=1 makes negative prompts inert either way.
 KEYFRAME_NEGATIVE_PROMPT = (
     "blurry, low quality, worst quality, cartoon, illustration, CGI, 3D render, surreal, "
     "impossible geometry, unstable architecture, camera shake, zoom, fast camera movement, "
@@ -81,23 +81,22 @@ MOTION_NEGATIVE_PROMPT = (
 # should reuse this exact scene. Keep the identity clause (breed, fur color,
 # build -- matching character-reference/chowchow/approved/identity-notes-v1.md)
 # and the chowchow_mascot trigger word at the front of any new variant; only
-# the pose/setting sentence in the middle is meant to change. The "only one
-# dog" clause matters: subject LoRAs can duplicate their subject, and with
+# the pose/setting sentence in the middle is meant to change. The "Exactly one"
+# clause matters: subject LoRAs can duplicate their subject, and with
 # CFG pinned to 1.0 a negative prompt can't fix that after the fact -- it has
 # to be ruled out in the positive text instead, the same way "no person in
 # frame" already is.
 DEFAULT_KEYFRAME_PROMPT = (
-    "A single chow chow dog, chowchow_mascot, fluffy reddish-brown fur, thick mane, black nose, "
-    "sturdy compact build -- only one dog is visible in the frame, no duplicate or additional "
-    "dogs. A fictional independent neighborhood cafe interior, no recognizable location. The dog "
-    "lies flat on the wooden floor, head resting low on its front paws, eyes half-closed, calm "
-    "and content posture. Beside the dog, a wooden chair is pulled out from a small table "
-    "as if someone just sat down, a laptop on the table glowing softly, a ceramic coffee mug "
-    "beside it with gentle steam rising -- the owner is implied by these objects but is "
-    "completely out of frame, no person or human body part visible anywhere in the shot. Soft "
-    "warm daylight through a nearby window, realistic wood and stone textures, documentary "
-    "photography, photorealistic, physically plausible materials and lighting, locked-off "
-    "camera, stable centered composition, no logos, no readable text, no identifiable people"
+    "Documentary photograph inside a warm fictional independent neighborhood cafe. Exactly one "
+    "adult chow chow dog, chowchow_mascot, with fluffy reddish-brown fur, thick rounded mane, "
+    "black nose, small triangular ears, and a sturdy compact body. The dog's entire body is "
+    "clearly visible and unobstructed in a natural three-quarter side view. It lies in a relaxed "
+    "sphinx pose on an open area of wooden floor, with exactly two separate parallel front paws "
+    "extending forward, four anatomically correct legs total, and one curled tail resting above "
+    "the left hip. No furniture overlaps or hides the dog. A small wooden cafe table, plain "
+    "closed laptop, ceramic mug, shelves, and plants remain in the background. No people or "
+    "human body parts. Warm window daylight, realistic fur and materials, 35mm eye-level wide "
+    "shot, stable centered composition, no logos, no readable text."
 )
 
 # Motion 1 -- plays 7 of the 8 segments in the 64s macro-loop: the dog holds

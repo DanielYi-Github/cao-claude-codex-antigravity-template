@@ -13,11 +13,11 @@
 ## 固定身份描述（每個場景開頭都要有，不要改）
 
 ```text
-A single chow chow dog, chowchow_mascot, fluffy reddish-brown fur, thick mane, black nose, sturdy compact build -- only one dog is visible in the frame, no duplicate or additional dogs.
+Exactly one adult chow chow dog, chowchow_mascot, with fluffy reddish-brown fur, thick rounded mane, black nose, small triangular ears, and a sturdy compact body.
 ```
 
 - `chowchow_mascot` 是訓練 LoRA 時用的觸發詞，一定要保留在句子裡。
-- 「only one dog is visible in the frame, no duplicate or additional dogs」不是裝飾——角色 LoRA 常見的失敗模式是畫面裡多長出第二隻狗，而且 CFG 固定 1.0 的關係，negative prompt 在這個專案裡本來就是無效的（見下方說明），只能靠正向提示詞把它排除掉，不能指望模型自己不畫。
+- 「Exactly one adult chow chow dog」不是裝飾——角色 LoRA 常見的失敗模式是畫面裡多長出第二隻狗，而且 CFG 固定 1.0 的關係，negative prompt 在這個專案裡本來就是無效的（見下方說明），只能靠正向提示詞約束，不能指望 negative prompt 排除。
 - 犬種細節（暖金紅／橘棕色、厚鬃毛、黑鼻、結實緊湊體型）對齊 `character-reference/chowchow/approved/identity-notes-v1.md`，跟場景無關的部分不要換。
 
 ## 共用 Negative Prompt（關鍵幀）
@@ -37,7 +37,7 @@ camera shake, zoom, pan, fast camera movement, scene transition, flicker, strobi
 ## 場景範例 1：咖啡館地板・趴姿（目前 64 秒巨集循環在用的場景）
 
 ```text
-A single chow chow dog, chowchow_mascot, fluffy reddish-brown fur, thick mane, black nose, sturdy compact build -- only one dog is visible in the frame, no duplicate or additional dogs. A fictional independent neighborhood cafe interior, no recognizable location. The dog lies flat on the wooden floor in the foreground, head resting low on its front paws, eyes half-closed, calm and content posture. Beside the dog, a wooden chair is pulled out from a small table as if someone just sat down, a laptop on the table glowing softly, a ceramic coffee mug beside it with gentle steam rising -- the owner is implied by these objects but is completely out of frame, no person or human body part visible anywhere in the shot. Soft warm daylight through a nearby window, realistic wood and stone textures, documentary photography, photorealistic, physically plausible materials and lighting, locked-off camera, stable centered composition, no logos, no readable text, no identifiable people
+Documentary photograph inside a warm fictional independent neighborhood cafe. Exactly one adult chow chow dog, chowchow_mascot, with fluffy reddish-brown fur, thick rounded mane, black nose, small triangular ears, and a sturdy compact body. The dog's entire body is clearly visible and unobstructed in a natural three-quarter side view. It lies in a relaxed sphinx pose on an open area of wooden floor, with exactly two separate parallel front paws extending forward, four anatomically correct legs total, and one curled tail resting above the left hip. No furniture overlaps or hides the dog. A small wooden cafe table, plain closed laptop, ceramic mug, shelves, and plants remain in the background. No people or human body parts. Warm window daylight, realistic fur and materials, 35mm eye-level wide shot, stable centered composition, no logos, no readable text.
 ```
 
 搭配這個場景的兩組動作 prompt（64 秒巨集循環 = 8 個 8 秒片段，前 7 個播 Motion 1、第 8 個播 Motion 2）：
