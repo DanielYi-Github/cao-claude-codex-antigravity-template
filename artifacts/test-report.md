@@ -48,3 +48,12 @@ blue rainy windows, and an empty after-hours jazz-bistro atmosphere. All four ca
 showed a single dog directly on bare wood with no physical people or duplicate heads.
 Candidate 2 is the preferred production reference; the others require rejection or cleanup
 for repeated pianos, synthetic exterior lettering, or portrait artwork.
+
+## Scenic destination-cafe composition
+
+Five user-provided ambience references were distilled into a project-local target image at
+`workspace/temp/chowchow-v3-targets/scenic-lakeside-cafe-target-v1.png`. The matching ComfyUI
+iteration (`scenic-lake-cafe`, seed base `26090600`, batch 4) uses a landscape-first open lakeside
+pavilion at blue hour, with natural timber and stone framing, warm lanterns, and the dog as a
+secondary middle-distance subject. All four candidates contained one dog, one head, no people,
+and no floor mat. Candidates 1 and 3 best satisfy the long-form ambience composition.
