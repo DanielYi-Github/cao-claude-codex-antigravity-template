@@ -87,16 +87,21 @@ MOTION_NEGATIVE_PROMPT = (
 # to be ruled out in the positive text instead, the same way "no person in
 # frame" already is.
 DEFAULT_KEYFRAME_PROMPT = (
-    "Documentary photograph inside a warm fictional independent neighborhood cafe. Exactly one "
-    "adult chow chow dog, chowchow_mascot, with fluffy reddish-brown fur, thick rounded mane, "
-    "black nose, small triangular ears, and a sturdy compact body. The dog's entire body is "
-    "clearly visible and unobstructed in a natural three-quarter side view. It lies in a relaxed "
-    "sphinx pose on an open area of wooden floor, with exactly two separate parallel front paws "
-    "extending forward, four anatomically correct legs total, and one curled tail resting above "
-    "the left hip. No furniture overlaps or hides the dog. A small wooden cafe table, plain "
-    "closed laptop, ceramic mug, shelves, and plants remain in the background. No people or "
-    "human body parts. Warm window daylight, realistic fur and materials, 35mm eye-level wide "
-    "shot, stable centered composition, no logos, no readable text."
+    "Environmental interior photography, not pet portraiture: an extra-wide establishing view from "
+    "the rear corner of a warm fictional independent neighborhood cafe. The camera is eight meters "
+    "away with a 20mm wide-angle lens. Most of the image shows the cafe architecture and calm "
+    "atmosphere: a broad expanse of wooden floor, large windows, multiple empty tables and chairs "
+    "framing the foreground, bookshelves, plants, and deep background space. Exactly one adult chow "
+    "chow dog, chowchow_mascot, with fluffy reddish-brown fur, thick rounded mane, black nose, small "
+    "triangular ears, and a sturdy compact body rests alone on an open patch of floor in the middle "
+    "distance, near the lower-left rule-of-thirds point. The dog's full body width is less than one "
+    "third of the image width and the dog occupies roughly 25 percent of the frame; it is clearly "
+    "smaller than the surrounding cafe furniture, with abundant empty space on every side. No "
+    "close-up, no pet portrait, no oversized dog. The unobstructed dog is seen in a natural "
+    "three-quarter side view, lying in a relaxed sphinx pose with two separate parallel front paws, "
+    "four anatomically correct legs total, and one curled tail. No furniture overlaps the dog. No "
+    "laptop, no people or human body parts. Warm window daylight, realistic fur and materials, "
+    "high-angle locked-off wide shot, balanced architecture, no logos, no readable text."
 )
 
 # Motion 1 -- plays 7 of the 8 segments in the 64s macro-loop: the dog holds
