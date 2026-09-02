@@ -39,3 +39,12 @@ python3 comfyui-assets/scripts/validate_project.py
 ```
 
 Result: validation PASS; 82 tests passed; one Starlette/httpx deprecation warning.
+
+## Night jazz-bistro composition
+
+The final night iteration (`night-jazz-v2`, seed base `26090540`, batch 4) replaced the
+daylit reading-room look with dark walnut, burgundy banquettes, amber practical lights,
+blue rainy windows, and an empty after-hours jazz-bistro atmosphere. All four candidates
+showed a single dog directly on bare wood with no physical people or duplicate heads.
+Candidate 2 is the preferred production reference; the others require rejection or cleanup
+for repeated pianos, synthetic exterior lettering, or portrait artwork.
