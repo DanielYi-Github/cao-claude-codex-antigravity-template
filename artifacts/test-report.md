@@ -19,6 +19,16 @@ All four candidates remained single-dog and single-head with no obvious extra li
 prompt now uses concrete camera distance and spatial scale constraints and removes the laptop,
 which also avoided the recurring logo failure in this batch.
 
+The bare-floor iteration (`bare-floor`, seed base `26090400`, batch 4) removed rugs and
+mats in all four candidates. Three candidates were acceptable single-dog images; one contained
+a duplicated head and must be rejected. The production prompt therefore reinforces one continuous
+body and exactly one head near the pose description, but human candidate approval remains required.
+
+A second bare-floor batch (`bare-floor-v2`, seed base `26090440`, batch 4) again produced
+no rugs or mats in all four images. Three were valid single-dog candidates and one duplicated
+the head/body. The repeated 3/4 result confirms the floor change while showing that explicit
+single-head wording does not eliminate Schnell's anatomy failure mode.
+
 Ignored local evidence is under `workspace/temp/chowchow-v3-stress/`; it is intentionally not committed because it is generated media. The selected Kaggle output is under `workspace/temp/kaggle-chowchow-v3-selected/` and is also intentionally ignored.
 
 ## Commands
