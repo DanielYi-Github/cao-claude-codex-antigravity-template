@@ -1,0 +1,13 @@
+.warning-box {
+  margin: 0.75rem 0;
+  padding: 0.75rem;
+  border-left: 4px solid #d97706;
+  background: #fffbeb;
+  color: #92400e;
+  border-radius: 4px;
+}
+
+.production-section-title {
+  margin-top: 1.25rem;
+  margin-bottom: 0.25rem;
+}

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import math
+import shutil
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -26,7 +27,7 @@ from PIL import Image
 from ..config import AppConfig
 from ..db import StateDB
 from ..errors import GenerationError
-from ..media.audio import probe_audio
+from ..media.audio import combine_audio, extend_audio_at_least, probe_audio
 from ..media.timeline import probe_video, verify_render
 from ..providers.comfyui import ComfyUIClient
 from ..utils import ensure_dir, run_command, sha256_file
@@ -549,14 +550,74 @@ def build_handlers(
     def build_loop(db: StateDB, task: Any) -> None:
         _build_loop_variant(db, task, source_kind="clip_1080p", dest_kind="loop")
 
+    def build_music_mix(db: StateDB, task: Any) -> None:
+        episode_id = task["episode_id"]
+        episode = db.episode(episode_id)
+        approved = [
+            a for a in db.assets_for_episode(episode_id, kind="music_track")
+            if a["status"] == "approved"
+        ]
+        by_slot = {int(a["variant_index"]): a for a in approved}
+        if set(by_slot) != set(range(12)) or len({a["track_id"] for a in approved}) != 12:
+            raise GenerationError("音樂混音需要 12 個不同且已核准的曲目槽位")
+        music_job_id = episode["music_job_id"]
+        paths: list[str] = []
+        for slot in range(12):
+            asset = by_slot[slot]
+            track = db.track(asset["track_id"])
+            if (
+                track is None
+                or track["job_id"] != music_job_id
+                or track["status"] != "ready"
+                or not track["audio_path"]
+                or track["audio_path"] != asset["path"]
+            ):
+                raise GenerationError(f"第 {slot + 1} 首曲目不屬於本集或尚未就緒")
+            paths.append(track["audio_path"])
+
+        episode_dir = _episode_dir(config, episode["slug"])
+        album = episode_dir / "music-album-shared-v0.flac"
+        combine_audio(
+            paths,
+            album,
+            crossfade_seconds=float(config.section("video").get("crossfade_seconds", 2)),
+            codec="flac",
+        )
+        crossfade = float(config.section("video").get("crossfade_seconds", 2))
+        target_seconds = int(config.section("video").get("target_duration_minutes", 120)) * 60
+        dest = episode_dir / "music-mix-shared-v0.flac"
+        mixed = extend_audio_at_least(
+            album,
+            dest,
+            target_seconds,
+            crossfade,
+            codec="flac",
+        )
+        if mixed != dest:
+            # The album already exceeds the configured target. Keep the
+            # complete album but give the review asset its stable mix name.
+            shutil.copy2(mixed, dest)
+        info = probe_audio(dest)
+        duration = float(info.get("format", {}).get("duration") or 0)
+        if duration <= 0:
+            raise GenerationError(f"混音檔沒有可用長度：{dest}")
+        asset_id = db.create_asset(episode_id, "music_mix", "shared", status="running")
+        db.transition_asset(
+            asset_id,
+            expected_status="running",
+            expected_version=0,
+            status="awaiting_review",
+            path=str(dest),
+            sha256=sha256_file(dest),
+            duration_seconds=duration,
+        )
+
     def render_final(db: StateDB, task: Any) -> None:
         """Repeat the approved loop to match a music track's length and mux it in.
 
-        The audio to match comes from task['payload_json']['audio_path'] --
-        wiring that up to a specific finished track from the existing
-        tracks/jobs tables is the cross-pipeline integration studio-
-        architecture-plan.md Part 六 leaves for a later stage; this handler's
-        job is just "given a loop and an audio file, render the final video."
+        Studio normally resolves the approved music_mix automatically.
+        payload_json.audio_path remains as a backwards-compatible override
+        for direct task callers and focused tests.
         """
         episode_id = task["episode_id"]
         episode = db.episode(episode_id)
@@ -568,8 +629,15 @@ def build_handlers(
         payload = json.loads(task["payload_json"]) if task["payload_json"] else {}
         audio_path = payload.get("audio_path")
         if not audio_path:
+            mixes = [
+                a for a in db.assets_for_episode(episode_id, kind="music_mix")
+                if a["status"] == "approved" and a["path"]
+            ]
+            if mixes:
+                audio_path = mixes[-1]["path"]
+        if not audio_path:
             raise GenerationError(
-                "render_final 需要 payload_json.audio_path（要對齊的最終混音檔案）"
+                "render_final 需要已核准的 music_mix 或 payload_json.audio_path"
             )
         audio_duration = float(probe_audio(audio_path).get("format", {}).get("duration") or 0)
         if audio_duration <= 0:
@@ -615,5 +683,6 @@ def build_handlers(
         "upscale_clip": upscale_clip,
         "build_loop_preview": build_loop_preview,
         "build_loop": build_loop,
+        "build_music_mix": build_music_mix,
         "render_final": render_final,
     }

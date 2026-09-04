@@ -49,6 +49,55 @@ showed a single dog directly on bare wood with no physical people or duplicate h
 Candidate 2 is the preferred production reference; the others require rejection or cleanup
 for repeated pianos, synthetic exterior lettering, or portrait artwork.
 
+---
+
+# Five-tab Studio completion test report
+
+- Date: 2026-09-05 (Asia/Taipei)
+- Branch: `codex/chowchow-lora-v3`
+- Specification: `artifacts/spec.md`
+- Acceptance result: **PASS for implementation and fake-provider verification**; real external-provider and browser acceptance remains a human gate.
+
+## Covered behavior
+
+- Safe PNG/JPEG/WebP keyframe import restricted to the configured workspace, including path-traversal-resistant episode slugs.
+- Explicit Tab 3 production start/cancel, both motion roles, approval-driven 1080p upscale, and final loop build.
+- Atomic, payload-free synchronous music task guard; exactly 12 persistent ordered track slots; per-track failure/retry/review; API-key redaction and SQLite non-persistence.
+- Twelve-track FLAC crossfade and complete-album cycling to at least the configured duration floor.
+- Approved-loop plus approved-mix final rendering, Range-capable playback/download through the existing asset endpoint, editable English metadata, private-by-default YouTube upload, synthetic-media disclosure, callback persistence, and idempotent repeat upload.
+
+## Commands and results
+
+```text
+/Users/danielyi/Documents/Projects/cao-claude-codex-antigravity-forVideo/.venv/bin/pytest -q
+276 passed, 1 warning in 92.21s
+
+/Users/danielyi/Documents/Projects/cao-claude-codex-antigravity-forVideo/.venv/bin/ruff check <all changed Python source and test files>
+All checks passed!
+
+/Users/danielyi/Documents/Projects/cao-claude-codex-antigravity-forVideo/.venv/bin/python comfyui-assets/scripts/validate_project.py
+PASS: commercial project validation
+
+node --check src/lyria_auto/studio/web/app.js
+node --check src/lyria_auto/studio/web/tabs/tab1-keyframes.js
+node --check src/lyria_auto/studio/web/tabs/tab3-production.js
+node --check src/lyria_auto/studio/web/tabs/tab4-music.js
+node --check src/lyria_auto/studio/web/tabs/tab5-final.js
+all passed
+
+git diff --check
+passed
+```
+
+The single pytest warning is an upstream `StarletteDeprecationWarning` about the current `httpx` TestClient compatibility layer. It does not indicate a failed Studio behavior.
+
+## Known verification limits
+
+- `ruff check .` reports 13 pre-existing findings in `.cao/` and `comfyui-assets/scripts/`; the exact changed-file lint command passes.
+- `scripts/verify-local.sh` was not invoked directly because this worktree intentionally reuses the repository-root virtual environment instead of owning `.venv`. Its substantive checks were run manually with that environment.
+- The local server started successfully, but the browser skill found zero available browsers. No screenshot, responsive-layout, keyboard, or screen-reader test was possible.
+- Real ComfyUI/Lyria/ffmpeg two-hour production and YouTube OAuth/upload were not invoked, so no provider cost was incurred and no content was published.
+
 ## Scenic destination-cafe composition
 
 Five user-provided ambience references were distilled into a project-local target image at

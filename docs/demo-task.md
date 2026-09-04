@@ -24,26 +24,23 @@ record; the "What to build next" section is the live brief for future runs.
 
 ## What to build next
 
-1. **Get `chowchow-identity-v1.safetensors` trained.** The LoRA training
-   kernel (`comfyui-assets/kaggle_upload/kernel_chowchow_lora/`) has its
-   known idempotency bug fixed, but the training run itself still needs a
-   human to trigger it on Kaggle and confirm it produces a usable file — no
-   agent can do this (no GPU access).
-2. **Real ComfyUI generation** (keyframe candidates, motion tests, official
-   clips, upscales) through the six review gates — needs a human at the
-   machine running `lyria-auto studio`. Not delegable.
-3. Once real assets exist: wire `render_final`'s `payload_json.audio_path`
-   to an actual finished music track from the `tracks`/`jobs` tables (this
-   handler currently expects the caller to supply the path explicitly —
-   deciding how the studio pipeline picks *which* finished track to use is
-   unresolved, see `src/lyria_auto/studio/stages.py`'s `render_final`
-   docstring).
+1. **Human-run the completed five-tab Studio using real providers.** Import
+   `workspace/temp/scenic-cafe-personal-chowchow-v3/01-spring-sunny.png`,
+   approve it, and validate the Sleep/Lookup motion, 1080p upscale, 12 Lyria
+   tracks, two-hour mix, and final MP4. Automated tests use synthetic/fake
+   providers and do not claim visual or provider success.
+2. **Decide whether a remote ComfyUI service is actually needed.** Tab 3 now
+   works with the ComfyUI client configured at Studio startup; local MPS is
+   the default and `comfyui_remote_base_url` remains intentionally empty.
+   A vendor-specific browser token flow is not implemented because no vendor
+   or auth protocol has been selected.
+3. **Perform browser visual/accessibility QA.** The 2026-09-05 implementation
+   environment had no connected in-app/external browser, so API and JavaScript
+   syntax are tested but responsive layout and keyboard/screen-reader behavior
+   still need a real browser pass.
 4. `scripts/verify-local.sh` only checks the working-tree diff for
    whitespace, not the last commit (`git diff --check HEAD^ HEAD` catches
    more, per `codex_reviewer`'s review) — low priority, not yet fixed.
-5. Product decision needed from the human, not an agent task: whether to
-   actually rent a remote ComfyUI instance (`config/settings.yaml`'s
-   `studio.comfyui_remote_base_url`, already wired in code but unset).
 
 ## Constraints
 

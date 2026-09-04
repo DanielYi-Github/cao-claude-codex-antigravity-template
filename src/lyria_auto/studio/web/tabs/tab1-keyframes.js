@@ -82,6 +82,8 @@ export async function renderKeyframeTab(data, ctx) {
   $('#generateKeyframes').disabled = isGenerating;
   $('#regenerateKeyframes').disabled = isGenerating || hasApproved;
   $$('.batch-size-btn').forEach(btn => { btn.disabled = isGenerating || hasApproved; });
+  $('#keyframeImportPath').disabled = isGenerating || hasApproved;
+  $('#importKeyframe').disabled = isGenerating || hasApproved;
 
   if (hasApproved) {
     $('#generateKeyframes').classList.add('hidden');
@@ -155,9 +157,34 @@ export function bindKeyframeTab(ctx) {
   $('#generateKeyframes').onclick = () => generateKeyframes(ctx);
   $('#regenerateKeyframes').onclick = () => generateKeyframes(ctx);
   $('#cancelKeyframes').onclick = () => cancelKeyframes(ctx);
+  $('#importKeyframe').onclick = () => importKeyframe(ctx);
   $$('.batch-size-btn').forEach(btn => {
     btn.onclick = () => _selectBatchSize($$, Number(btn.dataset.size));
   });
+}
+
+async function importKeyframe(ctx) {
+  const { $, api, getEpisodeId, refresh } = ctx;
+  const episodeId = getEpisodeId();
+  const path = $('#keyframeImportPath').value.trim();
+  if (!episodeId || !path) {
+    $('#keyframeImportStatus').textContent = '請填入 workspace 內圖片的絕對路徑。';
+    return;
+  }
+  try {
+    $('#importKeyframe').disabled = true;
+    $('#keyframeImportStatus').textContent = '正在匯入與驗證圖片...';
+    await api(`/api/episodes/${episodeId}/keyframes/import`, {
+      method: 'POST',
+      body: JSON.stringify({ path }),
+    });
+    $('#keyframeImportStatus').textContent = '匯入完成，請在下方選擇此關鍵幀。';
+    await refresh();
+  } catch (err) {
+    $('#keyframeImportStatus').textContent = err.message;
+  } finally {
+    $('#importKeyframe').disabled = false;
+  }
 }
 
 async function approveKeyframe(ctx, assetId, expectedVersion) {

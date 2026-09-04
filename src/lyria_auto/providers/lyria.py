@@ -12,8 +12,15 @@ logger = logging.getLogger(__name__)
 
 
 class LyriaClient:
-    def __init__(self, model: str, max_attempts: int = 3, request_delay_seconds: float = 2.0):
-        api_key = os.getenv("GEMINI_API_KEY")
+    def __init__(
+        self,
+        model: str,
+        max_attempts: int = 3,
+        request_delay_seconds: float = 2.0,
+        *,
+        api_key: str | None = None,
+    ):
+        api_key = api_key or os.getenv("GEMINI_API_KEY")
         if not api_key:
             raise GenerationError("尚未設定 GEMINI_API_KEY")
         try:

@@ -72,13 +72,16 @@ edit of `STUDIO_SCHEMA_SQL`. Both migrations are checksum-tracked in
 `schema_migrations`; do not edit either SQL string in place — add a new
 migration id instead, the same way `0003` was added on top of `0002`.
 
-**Status as of `0003` + Phase 2**: `generate_keyframe`, `generate_motion_test`,
+**Status as of `0003` + Phase 5**: `generate_keyframe`, `generate_motion_test`,
 `generate_clip`, `upscale_clip`, `build_loop_preview`, `build_loop`, and
 `render_final` all have working handlers in `src/lyria_auto/studio/
-stages.py`. `generate_music_tracks` and `build_music_mix` are still
-schema-only — no handler registered yet (planned for `studio-console-v2-
-plan.md` Phase 4). `episodes.music_job_id` is likewise schema-only: no
-code currently reads or writes it (Phase 4).
+stages.py`. `build_music_mix` also has a background handler. Lyria generation
+uses a request-scoped `generate_music_tracks` task row rather than the
+background worker: the row is inserted directly as `running`, never carries
+`payload_json`, and is finished by the HTTP request so the API key cannot
+outlive the request or enter SQLite. `episodes.music_job_id` now atomically
+reserves one Studio music job, and legacy resume lookup explicitly excludes
+jobs referenced this way.
 
 **`generate_keyframe` (Phase 1, studio-console-v2-plan.md tab 1)**: unlike
 every other stage, this task carries no `asset_id` — it fans one ComfyUI
@@ -147,24 +150,21 @@ endpoint 409s under the same two conditions as keyframe's
 generate/regenerate (a `loop_preview` already `approved`; a
 `build_loop_preview` task already `queued`/`running`).
 
-Approving a `motion_test` asset no longer auto-advances to `clip`
-generation — `_NEXT_KIND` in `app.py` dropped that entry. Reason: `clip`
-and `upscale_clip` share one remote ComfyUI client (`stages.py`'s
-`clip_comfyui`), and tab 3 (not built yet) is what will collect the cloud
-credential that client needs — auto-advancing on a tab-2 approval would
-fire a request needing a token before the reviewer ever reaches tab 3.
-Approving a `loop_preview` asset is correspondingly a no-op in
-`_continue_after_approval` for now (explicitly, not a silent fallthrough):
-it only unlocks tab 3's UI; enqueuing `generate_clip` for both roles is
-deferred to tab 3's own "start cloud processing" action once Phase 3 adds
-it. `enqueue_task()`'s asset-id guard (previously `generate_keyframe`-only)
-now covers `build_loop_preview` and `build_loop` too, via
-`_SELF_CREATING_TASK_TYPES` — same reasoning, both create their own asset
+Approving a `motion_test` asset does not auto-advance to `clip` generation.
+Approving a `loop_preview` only unlocks tab 3: its explicit "start
+production" action is the compute/cost boundary and enqueues both roles.
+The production/upscale handlers use the local or optional remote ComfyUI
+client configured at Studio startup; credentials are not accepted by these
+queued tasks. `enqueue_task()`'s asset-id guard (previously
+`generate_keyframe`-only) now covers `build_loop_preview`, `build_loop`,
+`build_music_mix`, and `render_final` via
+`_SELF_CREATING_TASK_TYPES` — the covered handlers create their own asset
 row(s) and ignore any `asset_id` they'd be given. `POST
 .../assets/{id}/reject`'s 400 (previously `keyframe`-only, via
-`_NO_PER_ASSET_REJECT`) now also covers `loop_preview`, `loop`, and
-`final` — all three share the same "handler self-creates, ignores
-asset_id" shape (this closes a latent bug in the pre-existing `loop`/
+`_NO_PER_ASSET_REJECT`) now also covers `loop_preview`, `loop`,
+`music_track`, `music_mix`, and `final`; music tracks use their dedicated
+request-scoped regenerate route, while the other kinds share the
+"handler self-creates, ignores asset_id" shape (this closes a latent bug in the pre-existing `loop`/
 `final` paths too, not just the new `loop_preview`, per codex_reviewer's
 design consult).
 

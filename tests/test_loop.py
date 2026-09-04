@@ -6,7 +6,13 @@ import pytest
 from conftest import write_sine_audio
 
 from lyria_auto.errors import MediaError
-from lyria_auto.media.audio import combine_audio, extend_audio, loop_audio, probe_audio
+from lyria_auto.media.audio import (
+    combine_audio,
+    extend_audio,
+    extend_audio_at_least,
+    loop_audio,
+    probe_audio,
+)
 
 
 def test_combine_audio_keeps_every_track_whole(tmp_path):
@@ -62,6 +68,19 @@ def test_extend_audio_keeps_material_longer_than_target_intact(tmp_path):
     assert not out.exists()
     duration = float(probe_audio(result)["format"]["duration"])
     assert abs(duration - 60.0) <= 1.0
+
+
+def test_extend_audio_at_least_uses_complete_copies_and_reaches_minimum(tmp_path):
+    src = tmp_path / "src.mp3"
+    write_sine_audio(src, duration=10.0)
+    out = tmp_path / "extended.flac"
+
+    extend_audio_at_least(src, out, target_seconds=25, crossfade_seconds=2.0)
+
+    duration = float(probe_audio(out)["format"]["duration"])
+    # 3 complete copies: 3*10 - 2*2 = 26 seconds. It reaches the lower
+    # bound without chopping the final copy at exactly 25 seconds.
+    assert duration == pytest.approx(26.0, abs=1.0)
 
 
 def test_loop_audio_crossfades_via_combine_audio(tmp_path, monkeypatch):

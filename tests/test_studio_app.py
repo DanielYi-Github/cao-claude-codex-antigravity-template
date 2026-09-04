@@ -4,10 +4,12 @@ import json
 from typing import Any
 
 from fastapi.testclient import TestClient
+from PIL import Image
 
 from lyria_auto.config import AppConfig
 from lyria_auto.db import StateDB
 from lyria_auto.studio.app import create_app
+from lyria_auto.studio.music import DEFAULT_MUSIC_PROMPT
 from lyria_auto.studio.stages import DEFAULT_KEYFRAME_PROMPT, KEYFRAME_NEGATIVE_PROMPT
 from lyria_auto.studio.worker import StudioWorker
 
@@ -25,13 +27,26 @@ class _FakeComfyUIClient:
         self.interrupt_count += 1
 
 
-def _client(tmp_path, *, keyframe_batch_size: int = 12, comfyui: Any = None):
+def _client(
+    tmp_path,
+    *,
+    keyframe_batch_size: int = 12,
+    comfyui: Any = None,
+    production_comfyui: Any = None,
+    music_runner: Any = None,
+    youtube_uploader: Any = None,
+):
     db = StateDB(tmp_path / "state.sqlite3")
     config = AppConfig(
         settings={"studio": {"keyframe_batch_size": keyframe_batch_size}},
         prompts={}, channels={}, root=tmp_path,
     )
-    app = create_app(db, config, comfyui or _FakeComfyUIClient())
+    kwargs = {"production_comfyui": production_comfyui}
+    if music_runner is not None:
+        kwargs["music_runner"] = music_runner
+    if youtube_uploader is not None:
+        kwargs["youtube_uploader"] = youtube_uploader
+    app = create_app(db, config, comfyui or _FakeComfyUIClient(), **kwargs)
     return db, TestClient(app)
 
 
@@ -52,6 +67,14 @@ def test_creating_an_episode_does_not_auto_generate(tmp_path):
     assert detail["tasks"] == []
 
 
+def test_episode_slug_rejects_path_traversal(tmp_path):
+    _db, client = _client(tmp_path)
+
+    resp = client.post("/api/episodes", json={"slug": "../../outside", "title": "E"})
+
+    assert resp.status_code == 422
+
+
 def test_generate_keyframes_enqueues_one_task_with_the_prompt_in_its_payload(tmp_path):
     db, client = _client(tmp_path)
     episode = client.post("/api/episodes", json={"slug": "e", "title": "E"}).json()
@@ -69,6 +92,116 @@ def test_generate_keyframes_enqueues_one_task_with_the_prompt_in_its_payload(tmp
     assert tasks[0]["asset_id"] is None
     payload = json.loads(tasks[0]["payload_json"])
     assert payload == {"positive_prompt": "rainy cafe", "negative_prompt": "no people", "batch_size": 4}
+
+
+def test_import_keyframe_copies_workspace_image_as_reviewable_candidate(tmp_path):
+    db, client = _client(tmp_path)
+    episode = client.post("/api/episodes", json={"slug": "e", "title": "E"}).json()
+    source = tmp_path / "workspace" / "temp" / "spring-sunny.png"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (1600, 900), "#70452b").save(source)
+
+    resp = client.post(
+        f"/api/episodes/{episode['id']}/keyframes/import",
+        json={"path": str(source)},
+    )
+
+    assert resp.status_code == 200, resp.text
+    asset = resp.json()
+    assert asset["status"] == "awaiting_review"
+    assert asset["kind"] == "keyframe"
+    assert asset["role"] == "shared"
+    assert (asset["width"], asset["height"]) == (1600, 900)
+    assert asset["source_prompt"] == "Imported local image: spring-sunny.png"
+    copied = tmp_path / "workspace" / "studio" / "e" / "keyframe-import-v0.png"
+    assert copied.is_file()
+    assert asset["path"] == str(copied)
+    assert copied.read_bytes() == source.read_bytes()
+    assert client.get(f"/api/artifact/{asset['id']}").status_code == 200
+    assert db.episode(episode["id"])["status"] == "in_progress"
+
+
+def test_import_keyframe_supersedes_an_unapproved_generated_candidate(tmp_path):
+    db, client = _client(tmp_path)
+    episode = client.post("/api/episodes", json={"slug": "e", "title": "E"}).json()
+    old_id = db.create_asset(episode["id"], "keyframe", "shared", variant_index=2)
+    db.transition_asset(
+        old_id, expected_status="queued", expected_version=0, status="awaiting_review"
+    )
+    source = tmp_path / "workspace" / "new.webp"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (320, 180), "#334455").save(source)
+
+    resp = client.post(
+        f"/api/episodes/{episode['id']}/keyframes/import", json={"path": str(source)}
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert db.asset(old_id)["status"] == "superseded"
+    assert resp.json()["variant_index"] == 3
+    assert resp.json()["path"].endswith("keyframe-import-v3.webp")
+
+
+def test_import_keyframe_rejects_paths_outside_the_configured_workspace(tmp_path):
+    _db, client = _client(tmp_path)
+    episode = client.post("/api/episodes", json={"slug": "e", "title": "E"}).json()
+    source = tmp_path / "outside.png"
+    Image.new("RGB", (10, 10)).save(source)
+
+    resp = client.post(
+        f"/api/episodes/{episode['id']}/keyframes/import", json={"path": str(source)}
+    )
+
+    assert resp.status_code == 400
+    assert "configured workspace" in resp.json()["detail"]
+
+
+def test_import_keyframe_rejects_a_non_image_without_mutating_candidates(tmp_path):
+    db, client = _client(tmp_path)
+    episode = client.post("/api/episodes", json={"slug": "e", "title": "E"}).json()
+    source = tmp_path / "workspace" / "not-an-image.png"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text("definitely not an image", encoding="utf-8")
+
+    resp = client.post(
+        f"/api/episodes/{episode['id']}/keyframes/import", json={"path": str(source)}
+    )
+
+    assert resp.status_code == 400
+    assert db.assets_for_episode(episode["id"]) == []
+
+
+def test_import_keyframe_is_blocked_after_approval_or_during_generation(tmp_path):
+    db, client = _client(tmp_path)
+    source = tmp_path / "workspace" / "candidate.jpg"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (32, 18)).save(source)
+
+    approved_episode = client.post(
+        "/api/episodes", json={"slug": "approved", "title": "Approved"}
+    ).json()
+    approved_id = db.create_asset(approved_episode["id"], "keyframe", "shared")
+    db.transition_asset(
+        approved_id, expected_status="queued", expected_version=0, status="awaiting_review"
+    )
+    db.transition_asset(
+        approved_id, expected_status="awaiting_review", expected_version=1, status="approved"
+    )
+    approved_resp = client.post(
+        f"/api/episodes/{approved_episode['id']}/keyframes/import",
+        json={"path": str(source)},
+    )
+    assert approved_resp.status_code == 409
+
+    running_episode = client.post(
+        "/api/episodes", json={"slug": "running", "title": "Running"}
+    ).json()
+    db.enqueue_task(running_episode["id"], "generate_keyframe")
+    running_resp = client.post(
+        f"/api/episodes/{running_episode['id']}/keyframes/import",
+        json={"path": str(source)},
+    )
+    assert running_resp.status_code == 409
 
 
 def test_generate_keyframes_with_no_prompt_still_enqueues_a_task(tmp_path):
@@ -175,6 +308,258 @@ def test_cancel_motion_generation_also_clears_a_queued_sibling(tmp_path):
     assert resp.json() == {"cancelled": 2}
     assert db.task(lookup_task)["status"] == "failed"
     assert db.asset(lookup_id)["status"] == "failed"
+
+
+def _seed_approved_motion_preview(db, episode_id):
+    for index, role in enumerate(("sleep", "lookup")):
+        asset_id = db.create_asset(
+            episode_id,
+            "motion_test",
+            role,
+            source_prompt=f"{role} prompt",
+            source_seed=700 + index,
+        )
+        db.transition_asset(
+            asset_id,
+            expected_status="queued",
+            expected_version=0,
+            status="approved",
+        )
+    preview_id = db.create_asset(episode_id, "loop_preview", "shared")
+    db.transition_asset(
+        preview_id,
+        expected_status="queued",
+        expected_version=0,
+        status="approved",
+    )
+
+
+def test_start_production_enqueues_both_roles_from_approved_motion_preview(tmp_path):
+    db, client = _client(tmp_path)
+    episode = client.post("/api/episodes", json={"slug": "e", "title": "E"}).json()
+    _seed_approved_motion_preview(db, episode["id"])
+
+    resp = client.post(f"/api/episodes/{episode['id']}/production/start")
+
+    assert resp.status_code == 200, resp.text
+    clips = db.assets_for_episode(episode["id"], kind="clip")
+    assert {a["role"] for a in clips} == {"sleep", "lookup"}
+    assert {a["source_prompt"] for a in clips} == {"sleep prompt", "lookup prompt"}
+    assert {a["source_seed"] for a in clips} == {700, 701}
+    tasks = db.tasks_for_episode(episode["id"])
+    assert [t["task_type"] for t in tasks] == ["generate_clip", "generate_clip"]
+    assert set(resp.json()["asset_ids"]) == {a["id"] for a in clips}
+
+
+def test_start_production_requires_approved_preview_and_does_not_duplicate_clips(tmp_path):
+    db, client = _client(tmp_path)
+    episode = client.post("/api/episodes", json={"slug": "e", "title": "E"}).json()
+
+    missing_preview = client.post(f"/api/episodes/{episode['id']}/production/start")
+    assert missing_preview.status_code == 409
+    assert db.assets_for_episode(episode["id"], kind="clip") == []
+
+    _seed_approved_motion_preview(db, episode["id"])
+    assert client.post(f"/api/episodes/{episode['id']}/production/start").status_code == 200
+    duplicate = client.post(f"/api/episodes/{episode['id']}/production/start")
+    assert duplicate.status_code == 409
+    assert len(db.assets_for_episode(episode["id"], kind="clip")) == 2
+
+
+def test_cancel_production_interrupts_the_production_client_and_clears_tasks(tmp_path):
+    remote = _FakeComfyUIClient()
+    db, client = _client(tmp_path, production_comfyui=remote)
+    episode = client.post("/api/episodes", json={"slug": "e", "title": "E"}).json()
+    _seed_approved_motion_preview(db, episode["id"])
+    client.post(f"/api/episodes/{episode['id']}/production/start")
+
+    resp = client.post(f"/api/episodes/{episode['id']}/production/cancel")
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"cancelled": 2}
+    assert remote.interrupt_count == 1
+    assert all(a["status"] == "failed" for a in db.assets_for_episode(episode["id"], kind="clip"))
+
+
+def _seed_approved_loop(db, episode_id):
+    loop_id = db.create_asset(episode_id, "loop", "shared")
+    db.transition_asset(
+        loop_id, expected_status="queued", expected_version=0, status="approved"
+    )
+
+
+def test_music_defaults_returns_editable_late_night_album_prompt(tmp_path):
+    _db, client = _client(tmp_path)
+
+    resp = client.get("/api/music/defaults")
+
+    assert resp.status_code == 200
+    assert resp.json() == {"base_prompt": DEFAULT_MUSIC_PROMPT, "track_count": 12}
+
+
+def test_generate_music_requires_loop_and_passes_secret_only_to_request_runner(tmp_path):
+    captured = {}
+
+    def runner(db, config, episode_id, *, base_prompt, api_key):
+        captured.update(episode_id=episode_id, base_prompt=base_prompt, api_key=api_key)
+        return {"job_id": 7, "generated": list(range(12)), "failed": [], "already_complete": False}
+
+    db, client = _client(tmp_path, music_runner=runner)
+    episode = client.post("/api/episodes", json={"slug": "e", "title": "E"}).json()
+    blocked = client.post(
+        f"/api/episodes/{episode['id']}/music/generate",
+        json={"base_prompt": "night jazz", "api_key": "super-secret"},
+    )
+    assert blocked.status_code == 409
+
+    _seed_approved_loop(db, episode["id"])
+    resp = client.post(
+        f"/api/episodes/{episode['id']}/music/generate",
+        json={"base_prompt": "night jazz", "api_key": "super-secret"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert captured == {
+        "episode_id": episode["id"],
+        "base_prompt": "night jazz",
+        "api_key": "super-secret",
+    }
+    serialized_db = (tmp_path / "state.sqlite3").read_bytes()
+    assert b"super-secret" not in serialized_db
+
+
+def test_music_provider_error_redacts_request_api_key(tmp_path):
+    def runner(*args, **kwargs):
+        raise RuntimeError(f"upstream reflected Authorization: {kwargs['api_key']}")
+
+    db, client = _client(tmp_path, music_runner=runner)
+    episode = client.post("/api/episodes", json={"slug": "e", "title": "E"}).json()
+    _seed_approved_loop(db, episode["id"])
+
+    resp = client.post(
+        f"/api/episodes/{episode['id']}/music/generate",
+        json={"base_prompt": "night jazz", "api_key": "do-not-leak"},
+    )
+
+    assert resp.status_code == 400
+    assert "do-not-leak" not in resp.text
+    assert "[REDACTED]" in resp.text
+
+
+def test_regenerate_music_track_reserves_replacement_in_same_slot(tmp_path):
+    calls = []
+
+    def runner(db, config, episode_id, *, base_prompt, api_key):
+        calls.append((base_prompt, api_key))
+        return {"job_id": db.episode(episode_id)["music_job_id"], "generated": [], "failed": [], "already_complete": False}
+
+    db, client = _client(tmp_path, music_runner=runner)
+    episode = client.post("/api/episodes", json={"slug": "e", "title": "E"}).json()
+    db.reserve_studio_music_job(episode["id"], [f"prompt {i}" for i in range(12)])
+    old = db.assets_for_episode(episode["id"], kind="music_track")[4]
+    db.transition_asset(
+        old["id"], expected_status="queued", expected_version=0, status="awaiting_review"
+    )
+
+    resp = client.post(
+        f"/api/episodes/{episode['id']}/music/tracks/{old['id']}/regenerate",
+        json={"expected_version": 1, "prompt": "new mellow guitar prompt", "api_key": "secret"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert db.asset(old["id"])["status"] == "rejected"
+    replacement = db.asset(resp.json()["replacement_asset_id"])
+    assert replacement["variant_index"] == 4
+    assert replacement["source_prompt"] == "new mellow guitar prompt"
+    assert calls == [("new mellow guitar prompt", "secret")]
+
+
+def test_build_music_mix_requires_all_twelve_approved_slots(tmp_path):
+    db, client = _client(tmp_path)
+    episode = client.post("/api/episodes", json={"slug": "e", "title": "E"}).json()
+    db.reserve_studio_music_job(episode["id"], [f"prompt {i}" for i in range(12)])
+    assets = db.assets_for_episode(episode["id"], kind="music_track")
+    for asset in assets[:-1]:
+        db.transition_asset(
+            asset["id"], expected_status="queued", expected_version=0, status="approved"
+        )
+    assert client.post(f"/api/episodes/{episode['id']}/music/build-mix").status_code == 409
+
+    last = assets[-1]
+    db.transition_asset(
+        last["id"], expected_status="queued", expected_version=0, status="approved"
+    )
+    resp = client.post(f"/api/episodes/{episode['id']}/music/build-mix")
+    assert resp.status_code == 200, resp.text
+    assert db.tasks_for_episode(episode["id"])[0]["task_type"] == "build_music_mix"
+
+
+def test_final_render_requires_approved_loop_and_mix_then_enqueues_once(tmp_path):
+    db, client = _client(tmp_path)
+    episode = client.post("/api/episodes", json={"slug": "e", "title": "E"}).json()
+    assert client.post(f"/api/episodes/{episode['id']}/final/render").status_code == 409
+
+    _seed_approved_loop(db, episode["id"])
+    mix_id = db.create_asset(episode["id"], "music_mix", "shared")
+    db.transition_asset(
+        mix_id, expected_status="queued", expected_version=0, status="approved"
+    )
+    resp = client.post(f"/api/episodes/{episode['id']}/final/render")
+
+    assert resp.status_code == 200, resp.text
+    assert db.task(resp.json()["task_id"])["task_type"] == "render_final"
+    assert client.post(f"/api/episodes/{episode['id']}/final/render").status_code == 409
+
+
+def test_final_metadata_defaults_are_english_and_disclose_ai(tmp_path):
+    _db, client = _client(tmp_path)
+    episode = client.post(
+        "/api/episodes", json={"slug": "e", "title": "Lakeside Chow Chow Café"}
+    ).json()
+
+    resp = client.get(f"/api/episodes/{episode['id']}/final/metadata-defaults")
+
+    assert resp.status_code == 200
+    assert "Lakeside Chow Chow Café" in resp.json()["title"]
+    assert "generative AI" in resp.json()["description"]
+    assert resp.json()["privacy_status"] == "private"
+
+
+def test_youtube_upload_requires_explicit_confirmation_and_approved_final(tmp_path):
+    calls = []
+
+    def uploader(db, config, episode_id, **kwargs):
+        calls.append((episode_id, kwargs))
+        return {"video_id": 1, "youtube_video_id": "yt123", "already_uploaded": False}
+
+    db, client = _client(tmp_path, youtube_uploader=uploader)
+    episode = client.post("/api/episodes", json={"slug": "e", "title": "E"}).json()
+    body = {
+        "title": "Cozy Jazz",
+        "description": "Original AI-assisted ambience production.",
+        "tags": ["cozy jazz"],
+        "privacy_status": "private",
+        "confirm_upload": False,
+    }
+    denied = client.post(f"/api/episodes/{episode['id']}/final/upload-youtube", json=body)
+    assert denied.status_code == 400
+    assert calls == []
+
+    body["confirm_upload"] = True
+    final_path = tmp_path / "final.mp4"
+    final_path.write_bytes(b"final")
+    final_id = db.create_asset(episode["id"], "final", "shared")
+    db.transition_asset(
+        final_id,
+        expected_status="queued",
+        expected_version=0,
+        status="approved",
+        path=str(final_path),
+    )
+    accepted = client.post(f"/api/episodes/{episode['id']}/final/upload-youtube", json=body)
+    assert accepted.status_code == 200, accepted.text
+    assert calls[0][0] == episode["id"]
+    assert calls[0][1]["privacy_status"] == "private"
 
 
 def test_rejecting_a_failed_asset_requeues_it_the_same_as_awaiting_review(tmp_path):
@@ -656,7 +1041,7 @@ def test_frontend_index_is_served(tmp_path):
 
 _SYNTHESIS_KIND = {
     "generate_keyframe": "keyframe", "build_loop_preview": "loop_preview",
-    "build_loop": "loop", "render_final": "final",
+    "build_loop": "loop", "build_music_mix": "music_mix", "render_final": "final",
 }
 
 
@@ -687,7 +1072,7 @@ def _fake_handlers(tmp_path):
 
     return {task_type: handler for task_type in (
         "generate_keyframe", "generate_motion_test", "generate_clip",
-        "upscale_clip", "build_loop_preview", "build_loop", "render_final",
+        "upscale_clip", "build_loop_preview", "build_loop", "build_music_mix", "render_final",
     )}
 
 

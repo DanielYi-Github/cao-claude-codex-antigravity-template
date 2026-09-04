@@ -31,3 +31,43 @@ Use the patch on `codex/chowchow-lora-v3`: v3 model filenames, keyframe strength
 # Confidence and unknowns
 
 Confidence is high that the workflow runs and is materially safer for the tested resting pose. Confidence is medium that it generalizes across arbitrary poses because the base-model mismatch remains. Standing, walking, rear-facing, crowded-prop, and WAN motion tests were not performed.
+
+---
+
+# Five-tab Studio completion review (2026-09-05)
+
+## Summary
+
+Branch `codex/chowchow-lora-v3` now implements the previously incomplete Tab 3–5 production path and connects it to the existing Tab 1–2 review flow. Tab 1 can safely import the user's selected scenic keyframe from the configured workspace; Tab 3 has an explicit production-cost boundary, clip/upscale review, and approved loop build; Tab 4 creates and reviews exactly 12 request-scoped Lyria tracks before a lossless album mix; Tab 5 renders, previews, downloads, approves, and optionally uploads a final video with editable metadata and two explicit upload confirmations.
+
+The implementation was reviewed against `artifacts/spec.md`, the current database contract, the existing phase plan, the changed API/UI/stage/provider code, and the full automated suite. No real paid provider request or YouTube upload was made during review.
+
+## Blocking findings
+
+None in the implemented local/API flow under the documented single-process Studio assumption.
+
+## Non-blocking findings
+
+- **Medium — real-provider validation — `src/lyria_auto/studio/music.py`, `src/lyria_auto/studio/stages.py`, `src/lyria_auto/studio/final.py`:** automated tests use fake Lyria, ComfyUI, ffmpeg metadata, and YouTube clients. A human must still inspect the real Sleep/Lookup motion, 1080p loop seams, all 12 music tracks, final audio/video synchronization, and the intended OAuth channel before publication.
+- **Medium — browser visual/accessibility QA — `src/lyria_auto/studio/web/`:** the in-app browser reported that no browser was available, so the frontend received JavaScript syntax checks and API integration tests but no responsive, keyboard, screen-reader, or screenshot pass. Run the Studio in Chrome/Safari before treating the UI polish as final.
+- **Medium — concurrency scope — `src/lyria_auto/db.py:start_synchronous_task`, `src/lyria_auto/studio/app.py:start_production`:** paid music starts have an atomic SQLite duplicate-spend guard, but several older check-then-enqueue paths still assume the one web process/one worker topology described in the architecture plan. Add broader database uniqueness/reservation constraints before supporting multiple Studio processes.
+- **Low — remote ComfyUI credentials — `src/lyria_auto/cli.py`, `src/lyria_auto/studio/app.py:create_app`:** Tab 3 uses the production client configured when Studio starts; it intentionally does not accept a browser-entered vendor token. A provider-specific credential flow remains a product decision after a remote service and authentication protocol are selected.
+- **Low — repository-wide lint baseline — `.cao/workflows/three_agent_demo.py`, `comfyui-assets/scripts/`:** `ruff check .` reports 13 pre-existing findings outside the Studio scope. All Python files changed by this implementation pass Ruff; unrelated scripts were preserved.
+
+## Tests executed
+
+- `/Users/danielyi/Documents/Projects/cao-claude-codex-antigravity-forVideo/.venv/bin/pytest -q` — **276 passed**, one upstream Starlette/httpx deprecation warning.
+- Ruff on every Python source/test file changed by this implementation — **PASS**.
+- `/Users/danielyi/Documents/Projects/cao-claude-codex-antigravity-forVideo/.venv/bin/python comfyui-assets/scripts/validate_project.py` — **PASS**.
+- `node --check` on `app.js` and Tab 1/3/4/5 modules — **PASS**.
+- `git diff --check` — **PASS**.
+- `ruff check .` — **not clean** because of 13 pre-existing, out-of-scope findings listed above.
+- Local Studio server startup — **PASS** on `127.0.0.1:8798`; browser navigation could not proceed because the browser plugin exposed no browser instance.
+
+## Suggested patch
+
+Use this branch's patch as the integrated Studio implementation. Before a public release, perform one real-provider episode using `workspace/temp/scenic-cafe-personal-chowchow-v3/01-spring-sunny.png`, record the visual/audio review outcome, and then decide whether remote ComfyUI authentication and multi-process reservations are required.
+
+## Confidence and unknowns
+
+Confidence is high in API state transitions, secret non-persistence, media-stage selection rules, approval gates, and fake-provider behavior because those paths are covered by the 276-test suite. Confidence is medium in frontend presentation and end-to-end external-provider behavior because no browser, paid Lyria request, real production ComfyUI run, two-hour playback, or YouTube upload was performed. `artifacts/ui-notes.md` and `artifacts/schema.md` do not exist in this worktree, so there were no newer Antigravity UI/data notes to incorporate.

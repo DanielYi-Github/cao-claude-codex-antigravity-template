@@ -15,6 +15,12 @@
 # Runtime artifacts may contain model output; keep the directory but ignore files.
 artifacts/*
 !artifacts/README.md
+!artifacts/spec.md
+!artifacts/architecture.md
+!artifacts/review.md
+!artifacts/ui-notes.md
+!artifacts/schema.md
+!artifacts/test-report.md
 
 # Secrets and local environment files
 .env

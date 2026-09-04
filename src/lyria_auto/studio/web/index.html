@@ -5,6 +5,9 @@
 <title>Lyria Studio</title>
 <link rel="stylesheet" href="/styles.css">
 <link rel="stylesheet" href="/tabs/tab2-motion.css">
+<link rel="stylesheet" href="/tabs/tab3-production.css">
+<link rel="stylesheet" href="/tabs/tab4-music.css">
+<link rel="stylesheet" href="/tabs/tab5-final.css">
 </head>
 <body>
 <h1>Lyria Studio</h1>
@@ -66,6 +69,17 @@
     </div>
 
     <div class="card">
+      <h3>匯入既有圖片</h3>
+      <p class="muted">可直接使用本專案 <code>workspace</code> 內已生成的圖片，不需重新生成。</p>
+      <div class="form-group">
+        <label for="keyframeImportPath">圖片絕對路徑：</label>
+        <input id="keyframeImportPath" placeholder="/…/workspace/temp/example.png">
+      </div>
+      <button id="importKeyframe">匯入成為候選關鍵幀</button>
+      <div id="keyframeImportStatus" class="notice" aria-live="polite"></div>
+    </div>
+
+    <div class="card">
       <h3>候選關鍵幀 (Candidates)</h3>
       <div id="keyframe-grid" class="image-grid"></div>
     </div>
@@ -73,22 +87,76 @@
 
   <div id="tab-2" class="tab-content hidden card">
     <h3>2. 動作 (Motion)</h3>
-    <p>此功能尚未實作</p>
+    <p>正在載入動作審核介面…</p>
   </div>
 
   <div id="tab-3" class="tab-content hidden card">
-    <h3>3. 升頻 (Upscale)</h3>
-    <p>此功能尚未實作</p>
+    <h3>3. 正式片段與升頻 (Production)</h3>
+    <p class="muted">使用已核准的動作製作 1024×576 正式片段，再升頻到 1080p，最後組成 64 秒高解析度循環。</p>
+    <div class="warning-box">按下開始會使用已設定的 ComfyUI 算力；若設定遠端 GPU，可能產生費用。</div>
+    <button id="startProduction">開始正式處理</button>
+    <button id="cancelProduction" class="stop-btn hidden">終止正式處理</button>
+    <div id="productionStatus" class="notice" aria-live="polite"></div>
+    <div id="production-grid" class="motion-grid"></div>
+    <div id="production-loop"></div>
   </div>
 
   <div id="tab-4" class="tab-content hidden card">
     <h3>4. 音樂 (Music)</h3>
-    <p>此功能尚未實作</p>
+    <p class="muted">生成一張風格一致、內容各異的 12 首原創伴讀爵士專輯。金鑰只用於這次請求，不會寫入資料庫或設定檔。</p>
+    <div class="form-group">
+      <label for="musicApiKey">Gemini API Key（若啟動 Studio 前已設定環境變數可留空）：</label>
+      <input id="musicApiKey" type="password" autocomplete="off" placeholder="只保存在目前欄位中">
+    </div>
+    <div class="form-group">
+      <label for="musicPrompt">專輯提示詞：</label>
+      <textarea id="musicPrompt" rows="6"></textarea>
+    </div>
+    <div class="inline-form">
+      <button id="musicPresetLateNight" type="button">深夜湖畔爵士預設</button>
+      <button id="generateMusic" type="button">生成 12 首音樂</button>
+      <button id="buildMusicMix" type="button" disabled>組合已核准曲目</button>
+    </div>
+    <div class="warning-box">音樂生成可能產生 API 費用；送出前會再次要求確認。請勿關閉頁面，完成的曲目會逐首保存。</div>
+    <div id="musicStatus" class="notice" aria-live="polite"></div>
+    <div id="music-grid" class="music-grid"></div>
+    <div id="music-mix"></div>
   </div>
 
   <div id="tab-5" class="tab-content hidden card">
     <h3>5. 最終成片 (Final)</h3>
-    <p>此功能尚未實作</p>
+    <p class="muted">將核准的 1080p 循環重複到完整混音長度，只在最後輸出時編碼一次 AAC 音訊。</p>
+    <button id="renderFinal">建立最終影片</button>
+    <div id="finalStatus" class="notice" aria-live="polite"></div>
+    <div id="final-player"></div>
+
+    <div id="youtube-section" class="youtube-section">
+      <h4>YouTube 文案與上傳（選用）</h4>
+      <p class="muted">先下載檢查即可，不必上傳。上傳永遠需要在這裡明確勾選並再次確認。</p>
+      <div class="form-group">
+        <label for="youtubeTitle">英文標題：</label>
+        <input id="youtubeTitle" maxlength="100">
+      </div>
+      <div class="form-group">
+        <label for="youtubeDescription">英文說明：</label>
+        <textarea id="youtubeDescription" rows="8" maxlength="5000"></textarea>
+      </div>
+      <div class="form-group">
+        <label for="youtubeTags">標籤（逗號分隔）：</label>
+        <input id="youtubeTags">
+      </div>
+      <div class="inline-form">
+        <label for="youtubePrivacy">隱私：</label>
+        <select id="youtubePrivacy">
+          <option value="private" selected>私人 Private</option>
+          <option value="unlisted">不公開 Unlisted</option>
+          <option value="public">公開 Public</option>
+        </select>
+      </div>
+      <label class="confirm-row"><input id="confirmYoutubeUpload" type="checkbox"> 我已檢查最終影片與文案，確認要上傳到設定的 YouTube 頻道。</label>
+      <button id="uploadYoutube" class="danger-action" disabled>上傳 YouTube</button>
+      <div id="youtubeStatus" class="notice" aria-live="polite"></div>
+    </div>
   </div>
 </section>
 

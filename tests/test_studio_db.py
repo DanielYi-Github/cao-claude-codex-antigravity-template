@@ -301,6 +301,75 @@ def test_music_track_asset_requires_track_id(tmp_path):
     assert music_assets[0]["track_id"] == track_id
 
 
+def test_reserve_studio_music_job_is_idempotent_and_creates_ordered_slots(tmp_path):
+    db = StateDB(tmp_path / "state.sqlite3")
+    episode_id = db.create_episode("e", "E")
+    prompts = [f"original prompt {i}" for i in range(12)]
+
+    first = db.reserve_studio_music_job(episode_id, prompts)
+    second = db.reserve_studio_music_job(episode_id, ["must not replace"] * 12)
+
+    assert first == second
+    assert db.episode(episode_id)["music_job_id"] == first
+    tracks = db.tracks_for_job(first)
+    assert len(tracks) == 12
+    assert [row["prompt"] for row in tracks] == prompts
+    assets = db.assets_for_episode(episode_id, kind="music_track")
+    assert [a["variant_index"] for a in assets] == list(range(12))
+    assert all(a["status"] == "queued" for a in assets)
+    assert [a["track_id"] for a in assets] == [t["id"] for t in tracks]
+
+
+def test_publish_studio_music_track_updates_track_and_asset_atomically(tmp_path):
+    db = StateDB(tmp_path / "state.sqlite3")
+    episode_id = db.create_episode("e", "E")
+    job_id = db.reserve_studio_music_job(episode_id, ["prompt"])
+    asset = db.assets_for_episode(episode_id, kind="music_track")[0]
+    assert db.transition_asset(
+        asset["id"], expected_status="queued", expected_version=0, status="running"
+    )
+
+    db.publish_studio_music_track(
+        episode_id,
+        asset["id"],
+        path="/tmp/track.m4a",
+        duration_seconds=173.0,
+        sha256="abc123",
+    )
+
+    published = db.asset(asset["id"])
+    track = db.track(published["track_id"])
+    assert published["status"] == "awaiting_review"
+    assert published["path"] == "/tmp/track.m4a"
+    assert track["job_id"] == job_id
+    assert track["status"] == "ready"
+    assert track["audio_path"] == published["path"]
+
+
+def test_studio_music_job_is_excluded_from_legacy_resume_lookup(tmp_path):
+    db = StateDB(tmp_path / "state.sqlite3")
+    episode_id = db.create_episode("e", "E")
+    job_id = db.reserve_studio_music_job(episode_id, ["prompt"])
+
+    assert db.resumable_job() is None
+    assert db.resumable_job(job_id) is None
+
+
+def test_synchronous_music_task_is_an_atomic_duplicate_guard(tmp_path):
+    db = StateDB(tmp_path / "state.sqlite3")
+    episode_id = db.create_episode("e", "E")
+
+    first = db.start_synchronous_task(episode_id, "generate_music_tracks")
+    duplicate = db.start_synchronous_task(episode_id, "generate_music_tracks")
+
+    assert first is not None
+    assert duplicate is None
+    assert db.task(first)["payload_json"] is None
+    db.finish_task(first, status="done")
+    retry = db.start_synchronous_task(episode_id, "generate_music_tracks")
+    assert retry is not None
+
+
 def test_migration_0003_preserves_rows_from_0002_only_database(tmp_path):
     from lyria_auto.db import (
         SCHEMA,
@@ -455,12 +524,8 @@ def test_migration_failure_rolls_back_atomically(tmp_path, monkeypatch):
     raw.commit()
     raw.close()
 
-    try:
+    with pytest.raises(sqlite3.OperationalError):
         StateDB(db_path)
-    except Exception:
-        pass
-    else:
-        raise AssertionError("expected the poisoned migration to raise")
 
     # The database must be left exactly as it was pre-migration: the
     # original episode_assets table intact with its old narrow CHECK (not

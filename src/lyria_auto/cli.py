@@ -159,16 +159,19 @@ def main(argv: list[str] | None = None) -> None:
         remote_url = studio_cfg.get("comfyui_remote_base_url", "")
         remote_comfyui = ComfyUIClient(base_url=remote_url) if remote_url else None
         workflows_dir = (config.root / studio_cfg["comfyui_workflows_dir"]).resolve()
-        # build_loop / render_final have no handler yet (Stage 4/5, see
-        # studio-architecture-plan.md 六) -- a task reaching those types
-        # fails loudly with "no handler registered" instead of hanging.
+        # Includes the full visual, music-mix, and final-render handler set.
         handlers = build_handlers(
             config, local_comfyui, workflows_dir, remote_comfyui=remote_comfyui
         )
         worker = StudioWorker(pipeline.db, handlers=handlers)
         worker.start()
         try:
-            app = create_app(pipeline.db, config, local_comfyui)
+            app = create_app(
+                pipeline.db,
+                config,
+                local_comfyui,
+                production_comfyui=remote_comfyui,
+            )
             print(f"Lyria Studio: http://{args.host}:{args.port}")
             uvicorn.run(app, host=args.host, port=args.port)
         finally:

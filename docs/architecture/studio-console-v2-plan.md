@@ -1,5 +1,15 @@
 # 五頁籤生產主控台：架構計畫 v2
 
+## 實作更新（2026-09-05）
+
+Phase 3–5 已在 `codex/chowchow-lora-v3` 完成，實際行為與早期規劃有三個刻意差異：
+
+1. Tab 3 使用 Studio 啟動時已設定的本機／遠端 ComfyUI client，網頁不接受遠端 token。原因是目前沒有選定廠商或認證協定，避免把供應商專屬密鑰模型硬塞進通用 queue；開始正式處理仍有獨立的算力／費用確認關卡。
+2. Tab 4 的 Gemini API key 僅活在同步 HTTP request。資料庫只寫一筆無 payload 的 `running` task 作進度與防雙重付費鎖；12 首依 slot 逐首發布，可單首修改 prompt 重生，完成後以 FLAC 交叉淡化並用完整專輯循環延長到設定時數下限。
+3. Tab 5 提供可編輯的英文 YouTube 文案模板，不另外花一次 Gemini 呼叫；`containsSyntheticMedia=true`、Music category 和私人上傳預設沿用既有 YouTube provider。上傳必須 checkbox 與二次確認，不會自動發生。
+
+完整驗收準則見 `artifacts/spec.md`，測試結果見 `artifacts/test-report.md`。以下保留原規劃與歷史 review，作為決策脈絡。
+
 延續 [`studio-architecture-plan.md`](./studio-architecture-plan.md) 的六道關卡設計。這次要把審核台從「一個扁平、依 kind 分組的列表」重構成使用者要的**5個循序頁籤**介面，並把目前完全脫鉤的三塊東西正式串起來：雲端算力升頻、12首音樂生成、最終長影片組裝＋YouTube發布素材。
 
 本文件由四個並行調查整合而成：`codex_reviewer` 的資料庫遷移提案、`agy_ui_data` 的 UI/UX 設計筆記（`artifacts/ui-notes.md`）、一次程式碼盤點（音樂/YouTube 既有邏輯）、一次外部研究（YouTube 上架規範 + ComfyUI 雲端服務現況）。

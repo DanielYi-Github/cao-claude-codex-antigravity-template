@@ -12,17 +12,23 @@ next 'awaiting_review' asset -- it never skips a gate.
 
 from __future__ import annotations
 
+import shutil
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from PIL import Image, UnidentifiedImageError
+from pydantic import BaseModel, Field, SecretStr
 
 from ..config import AppConfig
 from ..db import StateDB
 from ..providers.comfyui import ComfyUIClient
+from ..utils import ensure_dir, sha256_file
+from .final import metadata_defaults, upload_studio_final
+from .music import DEFAULT_MUSIC_PROMPT, generate_pending_tracks
 from .stages import DEFAULT_KEYFRAME_PROMPT, KEYFRAME_NEGATIVE_PROMPT
 
 WEB_ROOT = Path(__file__).resolve().parent / "web"
@@ -53,18 +59,44 @@ _NEXT_KIND = {
 # 7.8 -- flagged for the new loop_preview, but loop/final already had the
 # same shape and were already unreachable through this path for the same
 # reason).
-_NO_PER_ASSET_REJECT = {"keyframe", "loop_preview", "loop", "final"}
+_NO_PER_ASSET_REJECT = {
+    "keyframe", "loop_preview", "loop", "music_track", "music_mix", "final"
+}
 
 
 class CreateEpisodeRequest(BaseModel):
-    slug: str
-    title: str
+    slug: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{0,79}$")
+    title: str = Field(min_length=1, max_length=160)
 
 
 class GenerateKeyframesRequest(BaseModel):
     positive_prompt: str | None = None
     negative_prompt: str | None = None
     batch_size: int | None = None
+
+
+class ImportKeyframeRequest(BaseModel):
+    path: str
+
+
+class GenerateMusicRequest(BaseModel):
+    base_prompt: str = Field(default=DEFAULT_MUSIC_PROMPT, min_length=1, max_length=3500)
+    api_key: SecretStr | None = None
+
+
+class RegenerateMusicTrackRequest(BaseModel):
+    expected_version: int
+    prompt: str = Field(min_length=1, max_length=4000)
+    api_key: SecretStr | None = None
+
+
+class UploadFinalRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=100)
+    description: str = Field(min_length=1, max_length=5000)
+    tags: list[str] = Field(default_factory=list, max_length=30)
+    privacy_status: Literal["private", "unlisted", "public"] = "private"
+    confirm_upload: bool = False
+    channel_name: str = "main"
 
 
 class ApproveRequest(BaseModel):
@@ -77,8 +109,20 @@ class RejectRequest(BaseModel):
     new_prompt: str | None = None
 
 
-def create_app(db: StateDB, config: AppConfig, local_comfyui: ComfyUIClient) -> FastAPI:
+def create_app(
+    db: StateDB,
+    config: AppConfig,
+    local_comfyui: ComfyUIClient,
+    *,
+    production_comfyui: ComfyUIClient | None = None,
+    music_runner: Callable[..., dict[str, Any]] = generate_pending_tracks,
+    youtube_uploader: Callable[..., dict[str, Any]] = upload_studio_final,
+) -> FastAPI:
     app = FastAPI(title="Lyria Studio")
+    production_client = production_comfyui or local_comfyui
+    workspace_root = ensure_dir(
+        config.root / config.section("project").get("workspace", "workspace")
+    ).resolve()
 
     def _asset_in_episode(episode_id: int, asset_id: int) -> Any:
         asset = db.asset(asset_id)
@@ -123,15 +167,11 @@ def create_app(db: StateDB, config: AppConfig, local_comfyui: ComfyUIClient) -> 
             return
 
         if kind == "loop_preview":
-            # Deliberately does NOT enqueue generate_clip here. clip and
-            # upscale_clip share one remote ComfyUI client (stages.py's
-            # clip_comfyui), and tab 3 (not built yet) is what collects the
-            # cloud credential that client needs -- auto-advancing on
-            # approval would fire a request that needs a token before the
-            # reviewer ever reaches the tab that provides one. Approving
-            # this asset just unlocks tab 3's UI; its own "start cloud
-            # processing" action is what enqueues generate_clip for both
-            # roles (codex_reviewer design consult, studio-console-v2-plan.md
+            # Deliberately does NOT enqueue generate_clip here. Tab 3 is the
+            # production compute boundary: auto-advancing on approval would
+            # start expensive work before the reviewer reaches the explicit
+            # confirmation. Approval only unlocks tab 3; its own "start
+            # production" action enqueues both roles (studio-console-v2-plan
             # 7.1/7.8).
             return
 
@@ -224,6 +264,103 @@ def create_app(db: StateDB, config: AppConfig, local_comfyui: ComfyUIClient) -> 
         if episode["status"] == "draft":
             db.update_episode_status(episode_id, "in_progress")
         return {"task_id": task_id}
+
+    @app.post("/api/episodes/{episode_id}/keyframes/import")
+    def import_keyframe(episode_id: int, body: ImportKeyframeRequest) -> dict[str, Any]:
+        """Register an existing local image as a Tab 1 candidate.
+
+        The Studio is intentionally allowed to read only from the configured
+        project workspace.  This keeps the local-web endpoint from becoming
+        a general-purpose arbitrary-file reader while still covering images
+        created in ``workspace/temp`` by the project's generation tools.
+        """
+        episode = db.episode(episode_id)
+        if episode is None:
+            raise HTTPException(404, "episode not found")
+
+        raw_path = body.path.strip()
+        if not raw_path:
+            raise HTTPException(400, "path is required")
+        try:
+            source = Path(raw_path).expanduser().resolve(strict=True)
+        except (OSError, RuntimeError):
+            raise HTTPException(404, "image file not found") from None
+        if not source.is_file():
+            raise HTTPException(400, "path must point to an image file")
+        if not source.is_relative_to(workspace_root):
+            raise HTTPException(
+                400,
+                f"image must be inside the configured workspace: {workspace_root}",
+            )
+
+        try:
+            with Image.open(source) as image:
+                image.verify()
+            with Image.open(source) as image:
+                width, height = image.size
+                image_format = (image.format or "").lower()
+        except (UnidentifiedImageError, OSError, ValueError):
+            raise HTTPException(400, "the selected file is not a valid image") from None
+        if width <= 0 or height <= 0:
+            raise HTTPException(400, "the selected image has invalid dimensions")
+
+        existing = db.assets_for_episode(episode_id)
+        if any(a["kind"] == "keyframe" and a["status"] == "approved" for a in existing):
+            raise HTTPException(
+                409,
+                "a keyframe has already been approved for this episode -- "
+                "importing another image is not supported after approval",
+            )
+        if any(
+            t["task_type"] == "generate_keyframe" and t["status"] in ("queued", "running")
+            for t in db.tasks_for_episode(episode_id)
+        ):
+            raise HTTPException(
+                409,
+                "a keyframe generation task is queued or running -- stop or "
+                "wait for it before importing an image",
+            )
+
+        suffix = {
+            "jpeg": ".jpg",
+            "png": ".png",
+            "webp": ".webp",
+        }.get(image_format)
+        if suffix is None:
+            raise HTTPException(400, "supported image formats are PNG, JPEG, and WebP")
+
+        db.supersede_assets(episode_id, "keyframe", "shared")
+        variant_index = db.next_variant_index(episode_id, "keyframe", "shared")
+        episode_dir = ensure_dir(workspace_root / "studio" / episode["slug"])
+        destination = episode_dir / f"keyframe-import-v{variant_index}{suffix}"
+        try:
+            shutil.copy2(source, destination)
+        except OSError as exc:
+            raise HTTPException(500, f"could not copy the image into Studio: {exc}") from None
+
+        asset_id = db.create_asset(
+            episode_id,
+            "keyframe",
+            "shared",
+            variant_index=variant_index,
+            source_prompt=f"Imported local image: {source.name}",
+        )
+        changed = db.transition_asset(
+            asset_id,
+            expected_status="queued",
+            expected_version=0,
+            status="awaiting_review",
+            path=str(destination),
+            sha256=sha256_file(destination),
+            width=width,
+            height=height,
+        )
+        if not changed:
+            destination.unlink(missing_ok=True)
+            raise HTTPException(409, "the imported asset changed before it could be published")
+        if episode["status"] == "draft":
+            db.update_episode_status(episode_id, "in_progress")
+        return dict(db.asset(asset_id))
 
     @app.post("/api/episodes/{episode_id}/keyframes/cancel")
     def cancel_keyframe_generation(episode_id: int) -> dict[str, Any]:
@@ -335,15 +472,256 @@ def create_app(db: StateDB, config: AppConfig, local_comfyui: ComfyUIClient) -> 
         )
         return {"cancelled": cancelled}
 
+    @app.post("/api/episodes/{episode_id}/production/start")
+    def start_production(episode_id: int) -> dict[str, Any]:
+        """Start the reviewed sleep/lookup pair at production resolution.
+
+        Clicking this endpoint is the explicit compute boundary: approving
+        the cheap 64-second preview never starts the heavier render by
+        itself.  The configured production ComfyUI client may point at the
+        local MPS instance or at a remote instance configured before Studio
+        starts; no credential is accepted or persisted by this route.
+        """
+        if db.episode(episode_id) is None:
+            raise HTTPException(404, "episode not found")
+        if not any(
+            a["kind"] == "loop_preview" and a["status"] == "approved"
+            for a in db.assets_for_episode(episode_id)
+        ):
+            raise HTTPException(
+                409,
+                "the 64-second motion preview must be approved before production starts",
+            )
+
+        sources: dict[str, Any] = {}
+        for role in ("sleep", "lookup"):
+            approved = [
+                a
+                for a in db.assets_for_episode(episode_id, kind="motion_test", role=role)
+                if a["status"] == "approved"
+            ]
+            if not approved:
+                raise HTTPException(409, f"no approved {role} motion test")
+            sources[role] = approved[-1]
+
+        active_clips = [
+            a
+            for a in db.assets_for_episode(episode_id, kind="clip")
+            if a["status"] not in ("rejected", "superseded")
+        ]
+        active_roles = {a["role"] for a in active_clips}
+        task_ids: list[int] = []
+        asset_ids: list[int] = []
+        for role in ("sleep", "lookup"):
+            if role in active_roles:
+                continue
+            source = sources[role]
+            asset_id = db.create_asset(
+                episode_id,
+                "clip",
+                role,
+                variant_index=db.next_variant_index(episode_id, "clip", role),
+                source_prompt=source["source_prompt"],
+                source_seed=source["source_seed"],
+            )
+            task_ids.append(
+                db.enqueue_task(episode_id, "generate_clip", asset_id=asset_id)
+            )
+            asset_ids.append(asset_id)
+        if not task_ids:
+            raise HTTPException(
+                409,
+                "production clips already exist -- review them or use Regenerate on a failed result",
+            )
+        return {"task_ids": task_ids, "asset_ids": asset_ids}
+
+    @app.post("/api/episodes/{episode_id}/production/cancel")
+    def cancel_production(episode_id: int) -> dict[str, Any]:
+        if db.episode(episode_id) is None:
+            raise HTTPException(404, "episode not found")
+        production_client.interrupt()
+        cancelled = db.cancel_tasks(
+            episode_id,
+            {"generate_clip", "upscale_clip"},
+            error="使用者手動終止正式片段處理",
+        )
+        return {"cancelled": cancelled}
+
+    @app.get("/api/music/defaults")
+    def music_defaults() -> dict[str, Any]:
+        return {"base_prompt": DEFAULT_MUSIC_PROMPT, "track_count": 12}
+
+    @app.post("/api/episodes/{episode_id}/music/generate")
+    def generate_music(episode_id: int, body: GenerateMusicRequest) -> dict[str, Any]:
+        if db.episode(episode_id) is None:
+            raise HTTPException(404, "episode not found")
+        if not any(
+            a["kind"] == "loop" and a["status"] == "approved"
+            for a in db.assets_for_episode(episode_id)
+        ):
+            raise HTTPException(409, "approve the 1080p loop before generating music")
+        task_id = db.start_synchronous_task(episode_id, "generate_music_tracks")
+        if task_id is None:
+            raise HTTPException(409, "music generation is already running for this episode")
+        try:
+            result = music_runner(
+                db,
+                config,
+                episode_id,
+                base_prompt=body.base_prompt,
+                api_key=body.api_key.get_secret_value() if body.api_key else None,
+            )
+            failed_count = len(result.get("failed", []))
+            db.finish_task(
+                task_id,
+                status="failed" if failed_count else "done",
+                error=f"{failed_count} music track(s) failed" if failed_count else None,
+            )
+            return result
+        except Exception as exc:  # noqa: BLE001 - request boundary redacts provider errors
+            # SecretStr keeps request reprs safe; never echo the supplied
+            # value in an HTTP error either, even if an upstream provider
+            # reflected it in its own exception text.
+            message = str(exc)
+            if body.api_key:
+                message = message.replace(body.api_key.get_secret_value(), "[REDACTED]")
+            db.finish_task(task_id, status="failed", error=message[:800])
+            raise HTTPException(400, message[:800]) from None
+
+    @app.post("/api/episodes/{episode_id}/music/tracks/{asset_id}/regenerate")
+    def regenerate_music_track(
+        episode_id: int, asset_id: int, body: RegenerateMusicTrackRequest
+    ) -> dict[str, Any]:
+        _asset_in_episode(episode_id, asset_id)
+        task_id = db.start_synchronous_task(episode_id, "generate_music_tracks")
+        if task_id is None:
+            raise HTTPException(409, "music generation is already running for this episode")
+        try:
+            replacement_id = db.replace_studio_music_track(
+                episode_id,
+                asset_id,
+                expected_version=body.expected_version,
+                prompt=body.prompt,
+            )
+        except ValueError as exc:
+            db.finish_task(task_id, status="failed", error=str(exc)[:800])
+            raise HTTPException(409, str(exc)) from None
+        try:
+            result = music_runner(
+                db,
+                config,
+                episode_id,
+                base_prompt=body.prompt,
+                api_key=body.api_key.get_secret_value() if body.api_key else None,
+            )
+            failed_count = len(result.get("failed", []))
+            db.finish_task(
+                task_id,
+                status="failed" if failed_count else "done",
+                error=f"{failed_count} music track(s) failed" if failed_count else None,
+            )
+        except Exception as exc:  # noqa: BLE001 - request boundary redacts provider errors
+            message = str(exc)
+            if body.api_key:
+                message = message.replace(body.api_key.get_secret_value(), "[REDACTED]")
+            db.finish_task(task_id, status="failed", error=message[:800])
+            raise HTTPException(400, message[:800]) from None
+        return {"replacement_asset_id": replacement_id, **result}
+
+    @app.post("/api/episodes/{episode_id}/music/build-mix")
+    def build_music_mix(episode_id: int) -> dict[str, Any]:
+        if db.episode(episode_id) is None:
+            raise HTTPException(404, "episode not found")
+        approved = [
+            a for a in db.assets_for_episode(episode_id, kind="music_track")
+            if a["status"] == "approved"
+        ]
+        slots = {int(a["variant_index"]) for a in approved}
+        if slots != set(range(12)):
+            raise HTTPException(409, "all 12 music slots must be approved before building the mix")
+        existing = db.assets_for_episode(episode_id, kind="music_mix")
+        if any(a["status"] in ("queued", "running", "awaiting_review", "approved") for a in existing):
+            raise HTTPException(409, "a music mix already exists or is being built")
+        if any(
+            t["task_type"] == "build_music_mix" and t["status"] in ("queued", "running")
+            for t in db.tasks_for_episode(episode_id)
+        ):
+            raise HTTPException(409, "a music mix task is already queued or running")
+        task_id = db.enqueue_task(episode_id, "build_music_mix")
+        return {"task_id": task_id}
+
+    @app.post("/api/episodes/{episode_id}/final/render")
+    def start_final_render(episode_id: int) -> dict[str, Any]:
+        if db.episode(episode_id) is None:
+            raise HTTPException(404, "episode not found")
+        if not any(
+            a["kind"] == "loop" and a["status"] == "approved"
+            for a in db.assets_for_episode(episode_id)
+        ):
+            raise HTTPException(409, "approve the 1080p loop before rendering the final video")
+        if not any(
+            a["kind"] == "music_mix" and a["status"] == "approved"
+            for a in db.assets_for_episode(episode_id)
+        ):
+            raise HTTPException(409, "approve the music mix before rendering the final video")
+        if any(
+            a["kind"] == "final" and a["status"] in ("queued", "running", "awaiting_review", "approved")
+            for a in db.assets_for_episode(episode_id)
+        ):
+            raise HTTPException(409, "a final video already exists or is rendering")
+        if any(
+            t["task_type"] == "render_final" and t["status"] in ("queued", "running")
+            for t in db.tasks_for_episode(episode_id)
+        ):
+            raise HTTPException(409, "a final render is already queued or running")
+        return {"task_id": db.enqueue_task(episode_id, "render_final")}
+
+    @app.get("/api/episodes/{episode_id}/final/metadata-defaults")
+    def final_metadata_defaults(episode_id: int) -> dict[str, Any]:
+        episode = db.episode(episode_id)
+        if episode is None:
+            raise HTTPException(404, "episode not found")
+        minutes = int(config.section("video").get("target_duration_minutes", 120))
+        return metadata_defaults(episode["title"], minutes)
+
+    @app.post("/api/episodes/{episode_id}/final/upload-youtube")
+    def upload_final_to_youtube(episode_id: int, body: UploadFinalRequest) -> dict[str, Any]:
+        if not body.confirm_upload:
+            raise HTTPException(400, "explicit upload confirmation is required")
+        if not any(
+            a["kind"] == "final" and a["status"] == "approved" and a["path"]
+            for a in db.assets_for_episode(episode_id)
+        ):
+            raise HTTPException(409, "approve the final video before uploading")
+        try:
+            return youtube_uploader(
+                db,
+                config,
+                episode_id,
+                title=body.title,
+                description=body.description,
+                tags=body.tags,
+                privacy_status=body.privacy_status,
+                channel_name=body.channel_name,
+            )
+        except Exception as exc:  # noqa: BLE001 - upload adapter errors become safe HTTP errors
+            raise HTTPException(400, str(exc)[:800]) from None
+
     @app.get("/api/episodes/{episode_id}")
     def get_episode(episode_id: int) -> dict[str, Any]:
         episode = db.episode(episode_id)
         if episode is None:
             raise HTTPException(404, "episode not found")
+        publication = None
+        if episode["music_job_id"] is not None:
+            videos = db.videos_for_job(int(episode["music_job_id"]))
+            if videos:
+                publication = dict(videos[-1])
         return {
             "episode": dict(episode),
             "assets": [dict(a) for a in db.assets_for_episode(episode_id)],
             "tasks": [dict(t) for t in db.tasks_for_episode(episode_id)],
+            "publication": publication,
         }
 
     @app.post("/api/episodes/{episode_id}/assets/{asset_id}/approve")
