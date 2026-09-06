@@ -667,6 +667,78 @@ def test_build_loop_preview_concatenates_seven_sleep_and_one_lookup_from_motion_
     assert db.assets_for_episode(episode_id, kind="loop") == []
 
 
+def test_build_music_mix_uses_twelve_slots_and_extends_losslessly_to_duration_floor(
+    tmp_path, monkeypatch
+):
+    db = StateDB(tmp_path / "state.sqlite3")
+    episode_id = db.create_episode("chowchow-001", "第一集")
+    db.reserve_studio_music_job(episode_id, [f"prompt {i}" for i in range(12)])
+    assets = db.assets_for_episode(episode_id, kind="music_track")
+    expected_paths = []
+    for slot, asset in enumerate(assets):
+        path = tmp_path / f"track-{slot}.m4a"
+        path.write_bytes(f"track-{slot}".encode())
+        expected_paths.append(str(path))
+        db.transition_asset(
+            asset["id"], expected_status="queued", expected_version=0, status="running"
+        )
+        db.publish_studio_music_track(
+            episode_id,
+            asset["id"],
+            path=str(path),
+            duration_seconds=170.0,
+            sha256=f"sha-{slot}",
+        )
+        published = db.asset(asset["id"])
+        db.transition_asset(
+            asset["id"],
+            expected_status="awaiting_review",
+            expected_version=published["state_version"],
+            status="approved",
+        )
+
+    captured = {}
+
+    def fake_combine(paths, dest, crossfade_seconds, *, codec):
+        captured["paths"] = list(paths)
+        captured["combine_codec"] = codec
+        Path(dest).parent.mkdir(parents=True, exist_ok=True)
+        Path(dest).write_bytes(b"album")
+        return Path(dest)
+
+    def fake_extend(source, dest, target_seconds, crossfade_seconds, *, codec):
+        captured["target_seconds"] = target_seconds
+        captured["extend_codec"] = codec
+        Path(dest).write_bytes(b"extended-album")
+        return Path(dest)
+
+    monkeypatch.setattr(stages, "combine_audio", fake_combine)
+    monkeypatch.setattr(stages, "extend_audio_at_least", fake_extend)
+    monkeypatch.setattr(
+        stages,
+        "probe_audio",
+        lambda path: {"format": {"duration": "7201.0"}, "streams": []},
+    )
+    config = make_config(tmp_path)
+    config.settings["video"] = {"target_duration_minutes": 120, "crossfade_seconds": 2}
+    workflows_dir = tmp_path / "workflows"
+    _write_workflows(workflows_dir)
+    handlers = stages.build_handlers(
+        config, FakeComfyUIClient(output_factory=lambda dest: None), workflows_dir
+    )
+    db.enqueue_task(episode_id, "build_music_mix")
+
+    _run(db, handlers)
+
+    assert captured["paths"] == expected_paths
+    assert captured["combine_codec"] == "flac"
+    assert captured["extend_codec"] == "flac"
+    assert captured["target_seconds"] == 7200
+    mix = db.assets_for_episode(episode_id, kind="music_mix")[0]
+    assert mix["status"] == "awaiting_review"
+    assert mix["duration_seconds"] == 7201.0
+
+
 def test_resolve_bound_assets_prefers_pinned_ids_over_latest_approved(tmp_path):
     """The whole point of pinning ids into the task payload at assemble
     time: a build must use exactly what the reviewer saw when they clicked
@@ -861,3 +933,33 @@ def test_render_final_requires_audio_path_in_payload(tmp_path, tiny_video_bytes)
 
     assert db.task(task_id)["status"] == "failed"
     assert "audio_path" in db.task(task_id)["error"]
+
+
+def test_render_final_uses_approved_music_mix_without_payload(
+    tmp_path, tiny_video_bytes, short_audio_path
+):
+    db = StateDB(tmp_path / "state.sqlite3")
+    episode_id = db.create_episode("chowchow-001", "第一集")
+    loop_path = tmp_path / "loop.mp4"
+    loop_path.write_bytes(tiny_video_bytes)
+    _approve_loop(db, episode_id, loop_path)
+    mix_id = db.create_asset(episode_id, "music_mix", "shared")
+    db.transition_asset(
+        mix_id,
+        expected_status="queued",
+        expected_version=0,
+        status="approved",
+        path=str(short_audio_path),
+    )
+    db.enqueue_task(episode_id, "render_final")
+
+    workflows_dir = tmp_path / "workflows"
+    _write_workflows(workflows_dir)
+    handlers = stages.build_handlers(
+        make_config(tmp_path), FakeComfyUIClient(output_factory=lambda dest: None), workflows_dir
+    )
+    _run(db, handlers)
+
+    final_asset = db.assets_for_episode(episode_id, kind="final")[0]
+    assert final_asset["status"] == "awaiting_review"
+    assert final_asset["duration_seconds"] == pytest.approx(5.0, abs=0.5)

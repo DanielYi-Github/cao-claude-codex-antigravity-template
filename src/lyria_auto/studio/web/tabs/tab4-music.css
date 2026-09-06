@@ -1,0 +1,31 @@
+.music-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
+.music-card {
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 0.9rem;
+  background: #fff;
+}
+
+.music-card.approved {
+  border: 2px solid #10b981;
+  background: #ecfdf5;
+}
+
+.music-card audio,
+.music-mix-player {
+  width: 100%;
+  margin: 0.6rem 0;
+}
+
+.music-prompt-preview {
+  max-height: 5.5rem;
+  overflow: auto;
+  font-size: 0.78rem;
+  color: #6b7280;
+}

@@ -15,18 +15,21 @@ from __future__ import annotations
 import json
 import logging
 import os
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, SecretStr
 
 from ..config import AppConfig
 from ..db import StateDB
 from ..providers.comfyui import ComfyUIClient
 from . import veo as veo_support
+from .final import metadata_defaults, upload_studio_final
+from .music import DEFAULT_MUSIC_PROMPT, generate_pending_tracks
 from .scene_composer import (
     PRESET_MATRIX_CEILING,
     T5_TRAINING_LIMIT,
@@ -67,7 +70,9 @@ _NEXT_KIND = {
 # 7.8 -- flagged for the new loop_preview, but loop/final already had the
 # same shape and were already unreachable through this path for the same
 # reason).
-_NO_PER_ASSET_REJECT = {"keyframe", "loop_preview", "loop", "final"}
+_NO_PER_ASSET_REJECT = {
+    "keyframe", "loop_preview", "loop", "music_track", "music_mix", "final"
+}
 
 # 頁籤 2 的四個環境主題按鈕。這裡**只有**環境動態子句——姿勢、地面、開口
 # 形式、光線全部由 scene_composer 從晶片選擇填，所以主題不再假設有窗、有湖
@@ -160,6 +165,26 @@ class RejectRequest(BaseModel):
     new_prompt: str | None = None
 
 
+class GenerateMusicRequest(BaseModel):
+    base_prompt: str = Field(default=DEFAULT_MUSIC_PROMPT, min_length=1, max_length=3500)
+    api_key: SecretStr | None = None
+
+
+class RegenerateMusicTrackRequest(BaseModel):
+    expected_version: int
+    prompt: str = Field(min_length=1, max_length=4000)
+    api_key: SecretStr | None = None
+
+
+class UploadFinalRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=100)
+    description: str = Field(min_length=1, max_length=5000)
+    tags: list[str] = Field(default_factory=list, max_length=30)
+    privacy_status: Literal["private", "unlisted", "public"] = "private"
+    confirm_upload: bool = False
+    channel_name: str = "main"
+
+
 def create_app(
     db: StateDB,
     config: AppConfig,
@@ -167,6 +192,9 @@ def create_app(
     *,
     veo_credential: veo_support.VeoCredential | None = None,
     veo_reachable_models: set[str] | None = None,
+    production_comfyui: ComfyUIClient | None = None,
+    music_runner: Callable[..., dict[str, Any]] = generate_pending_tracks,
+    youtube_uploader: Callable[..., dict[str, Any]] = upload_studio_final,
 ) -> FastAPI:
     app = FastAPI(title="Lyria Studio")
     # Shared with the worker's handler factory (see cli.py): tab 2's
@@ -953,15 +981,180 @@ def create_app(
             "abandoned_paid_operations": len(abandoned_paid),
         }
 
+    @app.get("/api/music/defaults")
+    def music_defaults() -> dict[str, Any]:
+        return {"base_prompt": DEFAULT_MUSIC_PROMPT, "track_count": 12}
+
+    @app.post("/api/episodes/{episode_id}/music/generate")
+    def generate_music_for_episode(
+        episode_id: int, body: GenerateMusicRequest
+    ) -> dict[str, Any]:
+        if db.episode(episode_id) is None:
+            raise HTTPException(404, "episode not found")
+        if not any(
+            a["kind"] == "loop" and a["status"] == "approved"
+            for a in db.assets_for_episode(episode_id)
+        ):
+            raise HTTPException(409, "approve the 1080p loop before generating music")
+        task_id = db.start_synchronous_task(episode_id, "generate_music_tracks")
+        if task_id is None:
+            raise HTTPException(409, "music generation is already running for this episode")
+        try:
+            result = music_runner(
+                db,
+                config,
+                episode_id,
+                base_prompt=body.base_prompt,
+                api_key=body.api_key.get_secret_value() if body.api_key else None,
+            )
+            failed_count = len(result.get("failed", []))
+            db.finish_task(
+                task_id,
+                status="failed" if failed_count else "done",
+                error=f"{failed_count} music track(s) failed" if failed_count else None,
+            )
+            return result
+        except Exception as exc:  # noqa: BLE001 - request boundary redacts provider errors
+            message = str(exc)
+            if body.api_key:
+                message = message.replace(body.api_key.get_secret_value(), "[REDACTED]")
+            db.finish_task(task_id, status="failed", error=message[:800])
+            raise HTTPException(400, message[:800]) from None
+
+    @app.post("/api/episodes/{episode_id}/music/tracks/{asset_id}/regenerate")
+    def regenerate_music_track(
+        episode_id: int, asset_id: int, body: RegenerateMusicTrackRequest
+    ) -> dict[str, Any]:
+        _asset_in_episode(episode_id, asset_id)
+        task_id = db.start_synchronous_task(episode_id, "generate_music_tracks")
+        if task_id is None:
+            raise HTTPException(409, "music generation is already running for this episode")
+        try:
+            replacement_id = db.replace_studio_music_track(
+                episode_id,
+                asset_id,
+                expected_version=body.expected_version,
+                prompt=body.prompt,
+            )
+        except ValueError as exc:
+            db.finish_task(task_id, status="failed", error=str(exc)[:800])
+            raise HTTPException(409, str(exc)) from None
+        try:
+            result = music_runner(
+                db,
+                config,
+                episode_id,
+                base_prompt=body.prompt,
+                api_key=body.api_key.get_secret_value() if body.api_key else None,
+            )
+            failed_count = len(result.get("failed", []))
+            db.finish_task(
+                task_id,
+                status="failed" if failed_count else "done",
+                error=f"{failed_count} music track(s) failed" if failed_count else None,
+            )
+        except Exception as exc:  # noqa: BLE001 - request boundary redacts provider errors
+            message = str(exc)
+            if body.api_key:
+                message = message.replace(body.api_key.get_secret_value(), "[REDACTED]")
+            db.finish_task(task_id, status="failed", error=message[:800])
+            raise HTTPException(400, message[:800]) from None
+        return {"replacement_asset_id": replacement_id, **result}
+
+    @app.post("/api/episodes/{episode_id}/music/build-mix")
+    def build_music_mix(episode_id: int) -> dict[str, Any]:
+        if db.episode(episode_id) is None:
+            raise HTTPException(404, "episode not found")
+        approved = [
+            a for a in db.assets_for_episode(episode_id, kind="music_track")
+            if a["status"] == "approved"
+        ]
+        slots = {int(a["variant_index"]) for a in approved}
+        if slots != set(range(12)):
+            raise HTTPException(409, "all 12 music slots must be approved before building the mix")
+        existing = db.assets_for_episode(episode_id, kind="music_mix")
+        if any(a["status"] in ("queued", "running", "awaiting_review", "approved") for a in existing):
+            raise HTTPException(409, "a music mix already exists or is being built")
+        if any(
+            t["task_type"] == "build_music_mix" and t["status"] in ("queued", "running")
+            for t in db.tasks_for_episode(episode_id)
+        ):
+            raise HTTPException(409, "a music mix task is already queued or running")
+        task_id = db.enqueue_task(episode_id, "build_music_mix")
+        return {"task_id": task_id}
+
+    @app.post("/api/episodes/{episode_id}/final/render")
+    def start_final_render(episode_id: int) -> dict[str, Any]:
+        if db.episode(episode_id) is None:
+            raise HTTPException(404, "episode not found")
+        if not any(
+            a["kind"] == "loop" and a["status"] == "approved"
+            for a in db.assets_for_episode(episode_id)
+        ):
+            raise HTTPException(409, "approve the 1080p loop before rendering the final video")
+        if not any(
+            a["kind"] == "music_mix" and a["status"] == "approved"
+            for a in db.assets_for_episode(episode_id)
+        ):
+            raise HTTPException(409, "approve the music mix before rendering the final video")
+        if any(
+            a["kind"] == "final" and a["status"] in ("queued", "running", "awaiting_review", "approved")
+            for a in db.assets_for_episode(episode_id)
+        ):
+            raise HTTPException(409, "a final video already exists or is rendering")
+        if any(
+            t["task_type"] == "render_final" and t["status"] in ("queued", "running")
+            for t in db.tasks_for_episode(episode_id)
+        ):
+            raise HTTPException(409, "a final render is already queued or running")
+        return {"task_id": db.enqueue_task(episode_id, "render_final")}
+
+    @app.get("/api/episodes/{episode_id}/final/metadata-defaults")
+    def final_metadata_defaults(episode_id: int) -> dict[str, Any]:
+        episode = db.episode(episode_id)
+        if episode is None:
+            raise HTTPException(404, "episode not found")
+        minutes = int(config.section("video").get("target_duration_minutes", 120))
+        return metadata_defaults(episode["title"], minutes)
+
+    @app.post("/api/episodes/{episode_id}/final/upload-youtube")
+    def upload_final_to_youtube(episode_id: int, body: UploadFinalRequest) -> dict[str, Any]:
+        if not body.confirm_upload:
+            raise HTTPException(400, "explicit upload confirmation is required")
+        if not any(
+            a["kind"] == "final" and a["status"] == "approved" and a["path"]
+            for a in db.assets_for_episode(episode_id)
+        ):
+            raise HTTPException(409, "approve the final video before uploading")
+        try:
+            return youtube_uploader(
+                db,
+                config,
+                episode_id,
+                title=body.title,
+                description=body.description,
+                tags=body.tags,
+                privacy_status=body.privacy_status,
+                channel_name=body.channel_name,
+            )
+        except Exception as exc:  # noqa: BLE001 - upload adapter errors become safe HTTP errors
+            raise HTTPException(400, str(exc)[:800]) from None
+
     @app.get("/api/episodes/{episode_id}")
     def get_episode(episode_id: int) -> dict[str, Any]:
         episode = db.episode(episode_id)
         if episode is None:
             raise HTTPException(404, "episode not found")
+        publication = None
+        if episode["music_job_id"] is not None:
+            videos = db.videos_for_job(int(episode["music_job_id"]))
+            if videos:
+                publication = dict(videos[-1])
         return {
             "episode": dict(episode),
             "assets": [dict(a) for a in db.assets_for_episode(episode_id)],
             "tasks": [dict(t) for t in db.tasks_for_episode(episode_id)],
+            "publication": publication,
         }
 
     @app.post("/api/episodes/{episode_id}/assets/{asset_id}/approve")

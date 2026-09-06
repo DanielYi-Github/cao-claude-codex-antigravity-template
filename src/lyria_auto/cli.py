@@ -212,6 +212,7 @@ def main(argv: list[str] | None = None) -> None:
                 pipeline.db, config, local_comfyui,
                 veo_credential=veo_credential,
                 veo_reachable_models=reachable,
+                production_comfyui=remote_comfyui,
             )
             print(f"Lyria Studio: http://{args.host}:{args.port}")
             uvicorn.run(app, host=args.host, port=args.port)

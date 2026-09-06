@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 from lyria_auto.config import AppConfig
 from lyria_auto.db import StateDB
 from lyria_auto.studio.app import create_app
+from lyria_auto.studio.music import DEFAULT_MUSIC_PROMPT
 from lyria_auto.studio.stages import KEYFRAME_NEGATIVE_PROMPT, default_keyframe_prompt
 from lyria_auto.studio.worker import StudioWorker
 
@@ -33,11 +34,23 @@ def _config_for(tmp_path, *, keyframe_batch_size: int = 12) -> AppConfig:
     )
 
 
-def _client(tmp_path, *, keyframe_batch_size: int = 12, comfyui: Any = None):
+def _client(
+    tmp_path,
+    *,
+    keyframe_batch_size: int = 12,
+    comfyui: Any = None,
+    music_runner: Any = None,
+    youtube_uploader: Any = None,
+):
     install_scene_presets(tmp_path)
     db = StateDB(tmp_path / "state.sqlite3")
     config = _config_for(tmp_path, keyframe_batch_size=keyframe_batch_size)
-    app = create_app(db, config, comfyui or _FakeComfyUIClient())
+    kwargs = {}
+    if music_runner is not None:
+        kwargs["music_runner"] = music_runner
+    if youtube_uploader is not None:
+        kwargs["youtube_uploader"] = youtube_uploader
+    app = create_app(db, config, comfyui or _FakeComfyUIClient(), **kwargs)
     return db, TestClient(app)
 
 
@@ -1140,3 +1153,184 @@ def test_motion_defaults_survive_an_unknown_stored_scene(tmp_path):
     assert data["sleep_prompt"]
     # 「選項 id 對不上」不是「人類手改過提示詞」——不能顯示那句提示。
     assert data["scene_stale"] is False
+
+
+def _seed_approved_loop(db, episode_id):
+    loop_id = db.create_asset(episode_id, "loop", "shared")
+    db.transition_asset(
+        loop_id, expected_status="queued", expected_version=0, status="approved"
+    )
+
+
+def test_music_defaults_returns_editable_late_night_album_prompt(tmp_path):
+    _db, client = _client(tmp_path)
+
+    resp = client.get("/api/music/defaults")
+
+    assert resp.status_code == 200
+    assert resp.json() == {"base_prompt": DEFAULT_MUSIC_PROMPT, "track_count": 12}
+
+
+def test_generate_music_requires_loop_and_passes_secret_only_to_request_runner(tmp_path):
+    captured = {}
+
+    def runner(db, config, episode_id, *, base_prompt, api_key):
+        captured.update(episode_id=episode_id, base_prompt=base_prompt, api_key=api_key)
+        return {"job_id": 7, "generated": list(range(12)), "failed": [], "already_complete": False}
+
+    db, client = _client(tmp_path, music_runner=runner)
+    episode = client.post("/api/episodes", json={"slug": "e", "title": "E"}).json()
+    blocked = client.post(
+        f"/api/episodes/{episode['id']}/music/generate",
+        json={"base_prompt": "night jazz", "api_key": "super-secret"},
+    )
+    assert blocked.status_code == 409
+
+    _seed_approved_loop(db, episode["id"])
+    resp = client.post(
+        f"/api/episodes/{episode['id']}/music/generate",
+        json={"base_prompt": "night jazz", "api_key": "super-secret"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert captured == {
+        "episode_id": episode["id"],
+        "base_prompt": "night jazz",
+        "api_key": "super-secret",
+    }
+    serialized_db = (tmp_path / "state.sqlite3").read_bytes()
+    assert b"super-secret" not in serialized_db
+
+
+def test_music_provider_error_redacts_request_api_key(tmp_path):
+    def runner(*args, **kwargs):
+        raise RuntimeError(f"upstream reflected Authorization: {kwargs['api_key']}")
+
+    db, client = _client(tmp_path, music_runner=runner)
+    episode = client.post("/api/episodes", json={"slug": "e", "title": "E"}).json()
+    _seed_approved_loop(db, episode["id"])
+
+    resp = client.post(
+        f"/api/episodes/{episode['id']}/music/generate",
+        json={"base_prompt": "night jazz", "api_key": "do-not-leak"},
+    )
+
+    assert resp.status_code == 400
+    assert "do-not-leak" not in resp.text
+    assert "[REDACTED]" in resp.text
+
+
+def test_regenerate_music_track_reserves_replacement_in_same_slot(tmp_path):
+    calls = []
+
+    def runner(db, config, episode_id, *, base_prompt, api_key):
+        calls.append((base_prompt, api_key))
+        return {"job_id": db.episode(episode_id)["music_job_id"], "generated": [], "failed": [], "already_complete": False}
+
+    db, client = _client(tmp_path, music_runner=runner)
+    episode = client.post("/api/episodes", json={"slug": "e", "title": "E"}).json()
+    db.reserve_studio_music_job(episode["id"], [f"prompt {i}" for i in range(12)])
+    old = db.assets_for_episode(episode["id"], kind="music_track")[4]
+    db.transition_asset(
+        old["id"], expected_status="queued", expected_version=0, status="awaiting_review"
+    )
+
+    resp = client.post(
+        f"/api/episodes/{episode['id']}/music/tracks/{old['id']}/regenerate",
+        json={"expected_version": 1, "prompt": "new mellow guitar prompt", "api_key": "secret"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert db.asset(old["id"])["status"] == "rejected"
+    replacement = db.asset(resp.json()["replacement_asset_id"])
+    assert replacement["variant_index"] == 4
+    assert replacement["source_prompt"] == "new mellow guitar prompt"
+    assert calls == [("new mellow guitar prompt", "secret")]
+
+
+def test_build_music_mix_requires_all_twelve_approved_slots(tmp_path):
+    db, client = _client(tmp_path)
+    episode = client.post("/api/episodes", json={"slug": "e", "title": "E"}).json()
+    db.reserve_studio_music_job(episode["id"], [f"prompt {i}" for i in range(12)])
+    assets = db.assets_for_episode(episode["id"], kind="music_track")
+    for asset in assets[:-1]:
+        db.transition_asset(
+            asset["id"], expected_status="queued", expected_version=0, status="approved"
+        )
+    assert client.post(f"/api/episodes/{episode['id']}/music/build-mix").status_code == 409
+
+    last = assets[-1]
+    db.transition_asset(
+        last["id"], expected_status="queued", expected_version=0, status="approved"
+    )
+    resp = client.post(f"/api/episodes/{episode['id']}/music/build-mix")
+    assert resp.status_code == 200, resp.text
+    assert db.tasks_for_episode(episode["id"])[0]["task_type"] == "build_music_mix"
+
+
+def test_final_render_requires_approved_loop_and_mix_then_enqueues_once(tmp_path):
+    db, client = _client(tmp_path)
+    episode = client.post("/api/episodes", json={"slug": "e", "title": "E"}).json()
+    assert client.post(f"/api/episodes/{episode['id']}/final/render").status_code == 409
+
+    _seed_approved_loop(db, episode["id"])
+    mix_id = db.create_asset(episode["id"], "music_mix", "shared")
+    db.transition_asset(
+        mix_id, expected_status="queued", expected_version=0, status="approved"
+    )
+    resp = client.post(f"/api/episodes/{episode['id']}/final/render")
+
+    assert resp.status_code == 200, resp.text
+    assert db.task(resp.json()["task_id"])["task_type"] == "render_final"
+    assert client.post(f"/api/episodes/{episode['id']}/final/render").status_code == 409
+
+
+def test_final_metadata_defaults_are_english_and_disclose_ai(tmp_path):
+    _db, client = _client(tmp_path)
+    episode = client.post(
+        "/api/episodes", json={"slug": "e", "title": "Lakeside Chow Chow Café"}
+    ).json()
+
+    resp = client.get(f"/api/episodes/{episode['id']}/final/metadata-defaults")
+
+    assert resp.status_code == 200
+    assert "Lakeside Chow Chow Café" in resp.json()["title"]
+    assert "generative AI" in resp.json()["description"]
+    assert resp.json()["privacy_status"] == "private"
+
+
+def test_youtube_upload_requires_explicit_confirmation_and_approved_final(tmp_path):
+    calls = []
+
+    def uploader(db, config, episode_id, **kwargs):
+        calls.append((episode_id, kwargs))
+        return {"video_id": 1, "youtube_video_id": "yt123", "already_uploaded": False}
+
+    db, client = _client(tmp_path, youtube_uploader=uploader)
+    episode = client.post("/api/episodes", json={"slug": "e", "title": "E"}).json()
+    body = {
+        "title": "Cozy Jazz",
+        "description": "Original AI-assisted ambience production.",
+        "tags": ["cozy jazz"],
+        "privacy_status": "private",
+        "confirm_upload": False,
+    }
+    denied = client.post(f"/api/episodes/{episode['id']}/final/upload-youtube", json=body)
+    assert denied.status_code == 400
+    assert calls == []
+
+    body["confirm_upload"] = True
+    final_path = tmp_path / "final.mp4"
+    final_path.write_bytes(b"final")
+    final_id = db.create_asset(episode["id"], "final", "shared")
+    db.transition_asset(
+        final_id,
+        expected_status="queued",
+        expected_version=0,
+        status="approved",
+        path=str(final_path),
+    )
+    accepted = client.post(f"/api/episodes/{episode['id']}/final/upload-youtube", json=body)
+    assert accepted.status_code == 200, accepted.text
+    assert calls[0][0] == episode["id"]
+    assert calls[0][1]["privacy_status"] == "private"

@@ -47,6 +47,8 @@ def combine_audio(
     tracks: list[str | Path],
     output_path: str | Path,
     crossfade_seconds: float = 2.0,
+    *,
+    codec: str = "aac",
 ) -> Path:
     """交叉淡化串接多段音訊。刻意不提供長度裁切參數：成品長度一律由完整曲目決定，
     絕不從中間切斷某一首（見 extend_audio / loop_audio 的說明）。"""
@@ -56,7 +58,8 @@ def combine_audio(
     out.parent.mkdir(parents=True, exist_ok=True)
 
     if len(tracks) == 1:
-        run_command(["ffmpeg", "-y", "-i", str(tracks[0]), "-c:a", "aac", "-b:a", "256k", str(out)])
+        codec_args = ["-c:a", "flac"] if codec == "flac" else ["-c:a", "aac", "-b:a", "256k"]
+        run_command(["ffmpeg", "-y", "-i", str(tracks[0]), *codec_args, str(out)])
         return out
 
     args = ["ffmpeg", "-y"]
@@ -70,7 +73,8 @@ def combine_audio(
         output_label = f"xf{i}"
         filters.append(f"[{current}][a{i}]acrossfade=d={crossfade_seconds}:c1=tri:c2=tri[{output_label}]")
         current = output_label
-    args += ["-filter_complex", ";".join(filters), "-map", f"[{current}]", "-c:a", "aac", "-b:a", "256k", str(out)]
+    codec_args = ["-c:a", "flac"] if codec == "flac" else ["-c:a", "aac", "-b:a", "256k"]
+    args += ["-filter_complex", ";".join(filters), "-map", f"[{current}]", *codec_args, str(out)]
     run_command(args)
     return out
 
@@ -116,3 +120,37 @@ def extend_audio(
     if duration >= target_seconds:
         return Path(input_path)
     return loop_audio(input_path, Path(output_path), float(target_seconds), crossfade_seconds)
+
+
+def extend_audio_at_least(
+    input_path: str | Path,
+    output_path: str | Path,
+    target_seconds: int,
+    crossfade_seconds: float = 2.0,
+    *,
+    codec: str = "flac",
+) -> Path:
+    """Repeat complete copies until the result reaches the requested minimum.
+
+    Studio ambience videos treat the configured duration as a lower bound.
+    No track is cut in half; therefore the result may be longer than the
+    target by less than one complete album cycle.
+    """
+    info = probe_audio(input_path)
+    duration = float(info.get("format", {}).get("duration") or 0)
+    if duration <= 0:
+        raise MediaError(f"無法讀取音訊長度：{input_path}")
+    if duration >= target_seconds:
+        return Path(input_path)
+    if crossfade_seconds >= duration:
+        raise MediaError(f"交叉淡化秒數（{crossfade_seconds}）必須小於素材長度（{duration:.1f}s）")
+    step = duration - crossfade_seconds
+    # N copies have duration N*step + crossfade.
+    import math
+    copies = max(1, math.ceil((target_seconds - crossfade_seconds) / step))
+    return combine_audio(
+        [input_path] * copies,
+        output_path,
+        crossfade_seconds,
+        codec=codec,
+    )

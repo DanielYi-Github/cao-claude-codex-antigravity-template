@@ -160,7 +160,9 @@ class YouTubeClient:
             on_video_created(video_id)
 
         if thumbnail_path:
-            thumb_media = MediaFileUpload(str(thumbnail_path), mimetype="image/jpeg")
+            suffix = Path(thumbnail_path).suffix.lower()
+            mime = "image/png" if suffix == ".png" else "image/jpeg"
+            thumb_media = MediaFileUpload(str(thumbnail_path), mimetype=mime)
             self.youtube.thumbnails().set(videoId=video_id, media_body=thumb_media).execute()
 
         playlist_id = self.ensure_playlist()

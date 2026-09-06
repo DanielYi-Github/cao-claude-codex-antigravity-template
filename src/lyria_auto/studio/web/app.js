@@ -1,6 +1,8 @@
 import { renderKeyframeTab, bindKeyframeTab } from './tabs/tab1-keyframes.js';
 import { renderMotionTab, bindMotionTab } from './tabs/tab2-motion.js';
 import { renderClipsTab, bindClipsTab } from './tabs/tab3-clips.js';
+import { renderMusicTab, bindMusicTab } from './tabs/tab4-music.js';
+import { renderFinalTab, bindFinalTab } from './tabs/tab5-final.js';
 
 export const $ = (s, root = document) => root.querySelector(s);
 export const $$ = (s, root = document) => root.querySelectorAll(s);
@@ -29,6 +31,13 @@ function stopPolling() {
   if (pollTimer) {
     clearInterval(pollTimer);
     pollTimer = null;
+  }
+}
+
+function startPolling() {
+  stopPolling();
+  if (currentEpisodeId != null) {
+    pollTimer = setInterval(() => renderEpisode(currentEpisodeId), 3000);
   }
 }
 
@@ -74,6 +83,8 @@ const ctx = {
   $, $$, api, STATUS_LABEL,
   getEpisodeId: () => currentEpisodeId,
   refresh: () => renderEpisode(currentEpisodeId),
+  pausePolling: stopPolling,
+  resumePolling: startPolling,
   openLightbox,
 };
 
@@ -94,8 +105,7 @@ async function openEpisode(episodeId) {
   if ($('#lookupPrompt')) $('#lookupPrompt').value = '';
 
   await renderEpisode(episodeId);
-  stopPolling();
-  pollTimer = setInterval(() => renderEpisode(episodeId), 3000);
+  startPolling();
 }
 
 async function renderEpisode(episodeId) {
@@ -111,6 +121,8 @@ async function renderEpisode(episodeId) {
   await renderKeyframeTab(data, ctx);
   await renderMotionTab(data, ctx);
   renderClipsTab(data, ctx);
+  await renderMusicTab(data, ctx);
+  await renderFinalTab(data, ctx);
 }
 
 export function openLightbox(src) {
@@ -121,6 +133,8 @@ export function openLightbox(src) {
 bindKeyframeTab(ctx);
 bindMotionTab(ctx);
 bindClipsTab(ctx);
+bindMusicTab(ctx);
+bindFinalTab(ctx);
 
 $('#createEpisode').onclick = async () => {
   const slug = $('#newSlug').value.trim();

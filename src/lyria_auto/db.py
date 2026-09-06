@@ -535,7 +535,7 @@ VALID_VIDEO_STATUSES = {
 # reproduced enqueue_task(..., "render_final", asset_id=...) being silently
 # accepted, leaving that placeholder stuck at "running" once claimed.
 _SELF_CREATING_TASK_TYPES = {
-    "generate_keyframe", "build_loop_preview", "build_loop", "render_final",
+    "generate_keyframe", "build_loop_preview", "build_loop", "build_music_mix", "render_final",
 }
 
 
@@ -808,6 +808,11 @@ class StateDB:
             "SELECT * FROM tracks WHERE job_id=? ORDER BY id", (job_id,)
         ).fetchall()
 
+    def track(self, track_id: int) -> sqlite3.Row | None:
+        return self.conn.execute(
+            "SELECT * FROM tracks WHERE id=?", (track_id,)
+        ).fetchone()
+
     def _track_is_reusable(self, row: sqlite3.Row) -> bool:
         """三個條件全部成立才能跳過重新生成：狀態為 ready、檔案存在、檔案可被 ffprobe 正確解析。
         第三條是關鍵：程式被中斷時可能正好寫到一半，只信資料庫狀態會拿到半殘檔。"""
@@ -836,12 +841,22 @@ class StateDB:
             "SELECT * FROM videos WHERE id=?", (video_id,)
         ).fetchone()
 
+    def videos_for_job(self, job_id: int) -> list[sqlite3.Row]:
+        return self.conn.execute(
+            "SELECT * FROM videos WHERE job_id=? ORDER BY id", (job_id,)
+        ).fetchall()
+
     def resumable_job(self, job_id: int | None = None) -> dict[str, Any] | None:
         if job_id is not None:
-            row = self.conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+            row = self.conn.execute(
+                "SELECT * FROM jobs WHERE id=? AND NOT EXISTS ("
+                "SELECT 1 FROM episodes WHERE episodes.music_job_id=jobs.id)",
+                (job_id,),
+            ).fetchone()
         else:
             row = self.conn.execute(
                 "SELECT * FROM jobs WHERE dry_run=0 AND status NOT IN ('complete','dry_run_complete') "
+                "AND NOT EXISTS (SELECT 1 FROM episodes WHERE episodes.music_job_id=jobs.id) "
                 "ORDER BY id DESC LIMIT 1"
             ).fetchone()
         return dict(row) if row else None
@@ -1352,6 +1367,190 @@ class StateDB:
         ).fetchone()
         return (row["m"] + 1) if row["m"] is not None else 0
 
+    def reserve_studio_music_job(self, episode_id: int, prompts: list[str]) -> int:
+        """Atomically reserve one music job and its ordered track slots.
+
+        The episode foreign key is the duplicate-generation guard: once a
+        music job is attached, every retry reuses it instead of silently
+        creating another paid 12-track batch.
+        """
+        if not prompts:
+            raise ValueError("at least one music prompt is required")
+        now = utc_now_iso()
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            episode = self.conn.execute(
+                "SELECT * FROM episodes WHERE id=?", (episode_id,)
+            ).fetchone()
+            if episode is None:
+                raise ValueError(f"episode not found: {episode_id}")
+            if episode["music_job_id"] is not None:
+                self.conn.commit()
+                return int(episode["music_job_id"])
+
+            job_payload = json.dumps(
+                {"origin": "studio", "track_count": len(prompts)}, ensure_ascii=False
+            )
+            job_id = int(
+                self.conn.execute(
+                    "INSERT INTO jobs(created_at,updated_at,status,channel,dry_run,payload_json) "
+                    "VALUES(?,?,?,'studio',0,?)",
+                    (now, now, "generating_audio", job_payload),
+                ).lastrowid
+            )
+            changed = self.conn.execute(
+                "UPDATE episodes SET music_job_id=?, updated_at=?, state_version=state_version+1 "
+                "WHERE id=? AND music_job_id IS NULL",
+                (job_id, now, episode_id),
+            ).rowcount
+            if changed != 1:
+                raise RuntimeError("episode music job was reserved concurrently")
+
+            for slot, prompt in enumerate(prompts):
+                signature = hashlib.sha256(prompt.encode("utf-8")).hexdigest()[:20]
+                track_id = int(
+                    self.conn.execute(
+                        "INSERT INTO tracks(job_id,prompt,signature,status,created_at) "
+                        "VALUES(?,?,?,'planned',?)",
+                        (job_id, prompt, signature, now),
+                    ).lastrowid
+                )
+                self.conn.execute(
+                    "INSERT INTO episode_assets("
+                    "episode_id,kind,role,variant_index,track_id,status,source_prompt,created_at,updated_at"
+                    ") VALUES(?,'music_track','shared',?,?,'queued',?,?,?)",
+                    (episode_id, slot, track_id, prompt, now, now),
+                )
+            self.conn.commit()
+            return job_id
+        except Exception:
+            self.conn.rollback()
+            raise
+
+    def publish_studio_music_track(
+        self,
+        episode_id: int,
+        asset_id: int,
+        *,
+        path: str,
+        duration_seconds: float,
+        sha256: str,
+    ) -> None:
+        """Atomically publish the track row and its review asset."""
+        now = utc_now_iso()
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = self.conn.execute(
+                "SELECT a.*, e.music_job_id, t.job_id AS track_job_id "
+                "FROM episode_assets a JOIN episodes e ON e.id=a.episode_id "
+                "JOIN tracks t ON t.id=a.track_id WHERE a.id=? AND a.episode_id=?",
+                (asset_id, episode_id),
+            ).fetchone()
+            if (
+                row is None
+                or row["kind"] != "music_track"
+                or row["status"] != "running"
+                or row["track_job_id"] != row["music_job_id"]
+            ):
+                raise ValueError("music asset no longer belongs to this episode/job or is not running")
+            self.conn.execute(
+                "UPDATE tracks SET audio_path=?,duration_seconds=?,sha256=?,status='ready',error=NULL "
+                "WHERE id=?",
+                (path, duration_seconds, sha256, row["track_id"]),
+            )
+            self.conn.execute(
+                "UPDATE episode_assets SET status='awaiting_review',path=?,duration_seconds=?,sha256=?,"
+                "error=NULL,state_version=state_version+1,updated_at=? WHERE id=?",
+                (path, duration_seconds, sha256, now, asset_id),
+            )
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+
+    def fail_studio_music_track(self, episode_id: int, asset_id: int, error: str) -> None:
+        now = utc_now_iso()
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = self.conn.execute(
+                "SELECT track_id,status FROM episode_assets WHERE id=? AND episode_id=? "
+                "AND kind='music_track'",
+                (asset_id, episode_id),
+            ).fetchone()
+            if row is None:
+                raise ValueError("music asset not found")
+            self.conn.execute(
+                "UPDATE tracks SET status='failed',error=? WHERE id=?",
+                (error, row["track_id"]),
+            )
+            self.conn.execute(
+                "UPDATE episode_assets SET status='failed',error=?,state_version=state_version+1,"
+                "updated_at=? WHERE id=?",
+                (error, now, asset_id),
+            )
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+
+    def replace_studio_music_track(
+        self,
+        episode_id: int,
+        asset_id: int,
+        *,
+        expected_version: int,
+        prompt: str,
+    ) -> int:
+        """Reject one reviewed track and reserve a replacement in its slot."""
+        now = utc_now_iso()
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            old = self.conn.execute(
+                "SELECT a.*,e.music_job_id,t.job_id AS track_job_id FROM episode_assets a "
+                "JOIN episodes e ON e.id=a.episode_id JOIN tracks t ON t.id=a.track_id "
+                "WHERE a.id=? AND a.episode_id=? AND a.kind='music_track'",
+                (asset_id, episode_id),
+            ).fetchone()
+            if (
+                old is None
+                or old["status"] not in ("awaiting_review", "failed")
+                or old["state_version"] != expected_version
+                or old["track_job_id"] != old["music_job_id"]
+            ):
+                raise ValueError("music asset changed or is not replaceable")
+            changed = self.conn.execute(
+                "UPDATE episode_assets SET status='rejected',state_version=state_version+1,updated_at=? "
+                "WHERE id=? AND state_version=?",
+                (now, asset_id, expected_version),
+            ).rowcount
+            if changed != 1:
+                raise ValueError("music asset changed")
+            signature = hashlib.sha256(prompt.encode("utf-8")).hexdigest()[:20]
+            track_id = int(
+                self.conn.execute(
+                    "INSERT INTO tracks(job_id,prompt,signature,status,created_at) "
+                    "VALUES(?,?,?,'planned',?)",
+                    (old["music_job_id"], prompt, signature, now),
+                ).lastrowid
+            )
+            replacement_id = int(
+                self.conn.execute(
+                    "INSERT INTO episode_assets("
+                    "episode_id,kind,role,variant_index,track_id,status,source_prompt,created_at,updated_at"
+                    ") VALUES(?,'music_track','shared',?,?,'queued',?,?,?)",
+                    (episode_id, old["variant_index"], track_id, prompt, now, now),
+                ).lastrowid
+            )
+            self.conn.execute(
+                "UPDATE jobs SET status='generating_audio',error=NULL,updated_at=? WHERE id=?",
+                (now, old["music_job_id"]),
+            )
+            self.conn.commit()
+            return replacement_id
+        except Exception:
+            self.conn.rollback()
+            raise
+
     def enqueue_task(
         self,
         episode_id: int,
@@ -1380,6 +1579,38 @@ class StateDB:
         )
         self.conn.commit()
         return int(cur.lastrowid)
+
+    def start_synchronous_task(self, episode_id: int, task_type: str) -> int | None:
+        """Atomically claim a request-scoped task without storing secrets.
+
+        Music generation cannot use the background queue because its API key
+        must not outlive the HTTP request. This running-only row is a durable
+        duplicate guard and progress marker; it never contains a payload.
+        """
+        now = utc_now_iso()
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            in_flight = self.conn.execute(
+                "SELECT id FROM studio_tasks WHERE episode_id=? AND task_type=? "
+                "AND status IN ('queued','running') LIMIT 1",
+                (episode_id, task_type),
+            ).fetchone()
+            if in_flight is not None:
+                self.conn.commit()
+                return None
+            task_id = int(
+                self.conn.execute(
+                    "INSERT INTO studio_tasks("
+                    "episode_id,task_type,status,attempts,created_at,started_at"
+                    ") VALUES(?,?,'running',1,?,?)",
+                    (episode_id, task_type, now, now),
+                ).lastrowid
+            )
+            self.conn.commit()
+            return task_id
+        except Exception:
+            self.conn.rollback()
+            raise
 
     def task(self, task_id: int) -> sqlite3.Row | None:
         return self.conn.execute(
