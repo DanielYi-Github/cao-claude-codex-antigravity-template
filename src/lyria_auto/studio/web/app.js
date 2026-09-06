@@ -1,5 +1,6 @@
 import { renderKeyframeTab, bindKeyframeTab } from './tabs/tab1-keyframes.js';
 import { renderMotionTab, bindMotionTab } from './tabs/tab2-motion.js';
+import { renderClipsTab, bindClipsTab } from './tabs/tab3-clips.js';
 
 export const $ = (s, root = document) => root.querySelector(s);
 export const $$ = (s, root = document) => root.querySelectorAll(s);
@@ -88,6 +89,10 @@ async function openEpisode(episodeId) {
   $('#keyframeStatus').textContent = '';
   $$('.batch-size-btn').forEach(b => b.classList.remove('active'));
 
+  // Reset Tab 2 UI
+  if ($('#sleepPrompt')) $('#sleepPrompt').value = '';
+  if ($('#lookupPrompt')) $('#lookupPrompt').value = '';
+
   await renderEpisode(episodeId);
   stopPolling();
   pollTimer = setInterval(() => renderEpisode(episodeId), 3000);
@@ -104,7 +109,8 @@ async function renderEpisode(episodeId) {
   $('#episodeTitle').textContent = `${data.episode.title}（${data.episode.status}）`;
 
   await renderKeyframeTab(data, ctx);
-  renderMotionTab(data, ctx);
+  await renderMotionTab(data, ctx);
+  renderClipsTab(data, ctx);
 }
 
 export function openLightbox(src) {
@@ -114,6 +120,7 @@ export function openLightbox(src) {
 
 bindKeyframeTab(ctx);
 bindMotionTab(ctx);
+bindClipsTab(ctx);
 
 $('#createEpisode').onclick = async () => {
   const slug = $('#newSlug').value.trim();

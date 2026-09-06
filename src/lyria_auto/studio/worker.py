@@ -13,6 +13,7 @@ driven end-to-end in tests with fakes -- no ComfyUI, no ffmpeg, no cost.
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 from typing import Any, Protocol
@@ -20,6 +21,10 @@ from typing import Any, Protocol
 from ..db import StateDB
 
 logger = logging.getLogger(__name__)
+
+# Poll task types whose asset may hold an operation the user has already
+# been charged for -- see StudioWorker._resume_paid_poll.
+_RESUMABLE_POLL_TASK_TYPES = {"poll_veo_motion", "poll_veo_clip"}
 
 
 class TaskHandler(Protocol):
@@ -71,8 +76,48 @@ class StudioWorker:
         """
         stale = self._db.tasks_by_status("running")
         for task in stale:
+            if self._resume_paid_poll(task):
+                continue
             self._fail(task, "worker restarted while this task was still running -- retry")
         return len(stale)
+
+    def _resume_paid_poll(self, task: Any) -> bool:
+        """Re-queue an interrupted Veo poll instead of writing it off.
+
+        A poll_veo_* task whose asset already carries an operation_id
+        describes a generation Google has ALREADY billed for. Failing it
+        the way every other stale task is failed would throw away work
+        the user paid for, when the operation is still sitting on
+        Google's side waiting to be collected -- so this finishes the
+        dead attempt and enqueues a fresh poll against the same
+        operation, leaving the asset untouched at 'running'.
+
+        Deliberately does NOT cover start_veo_* : a start interrupted
+        mid-flight may or may not have been billed, and re-running it
+        could charge twice. Those still fail loudly for a human to
+        reconcile, which is the same contract PaidStartUncertainError
+        already sets elsewhere.
+        """
+        if task["task_type"] not in _RESUMABLE_POLL_TASK_TYPES:
+            return False
+        if task["asset_id"] is None:
+            return False
+        asset = self._db.asset(task["asset_id"])
+        if asset is None or not asset["operation_id"]:
+            return False
+        self._db.finish_task(task["id"], status="done")
+        payload = json.loads(task["payload_json"]) if task["payload_json"] else None
+        self._db.enqueue_task(
+            task["episode_id"],
+            task["task_type"],
+            asset_id=task["asset_id"],
+            payload=payload,
+        )
+        logger.info(
+            "resumed paid Veo poll for asset %s (operation already billed)",
+            task["asset_id"],
+        )
+        return True
 
     def stop(self, *, timeout: float = 5.0) -> None:
         self._stop.set()

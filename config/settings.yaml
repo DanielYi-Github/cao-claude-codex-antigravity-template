@@ -68,6 +68,48 @@ studio:
   # image. If a real run OOMs or times out, lower this (e.g. to 4) rather
   # than assuming the code is wrong -- studio-console-v2-plan.md.
   keyframe_batch_size: 12
+  # --- Google Veo 動作生成路徑（artifacts/spec.md）---
+  # 頁籤 2 的「生成來源」下拉切到 Veo 時使用。本機 ComfyUI 路徑不受影響。
+  veo:
+    enabled: true
+    default_model: veo-3.1-fast-generate-preview
+    default_resolution: 720p
+    # poll_veo_motion 每次重新排隊之間的等待秒數。Veo 一支 8 秒片段
+    # 通常要 1-3 分鐘，查太密只是浪費 API 額度。
+    poll_interval_seconds: 15
+    # 一集最多允許幾次 Veo 付費啟動（sleep + lookup 各算一次）。
+    # 純粹是防手滑的上限，不是配額。
+    max_starts_per_episode: 12
+    # ⚠️ usd_per_second 全部是「未校對的估價快照」，不是查證過的官方報價。
+    # UI 一律標示為「預估」。首次真機執行後請人工對帳並更新這裡與
+    # pricing_snapshot_date。Google 隨時可能調價或改模型代號。
+    pricing_snapshot_date: '2026-09-06'
+    pricing_verified: false
+    models:
+      - id: veo-3.1-fast-generate-preview
+        label: Veo 3.1 Fast（速度優先）
+        resolutions: [720p, 1080p]
+        durations: [4, 6, 8]
+        supports_last_frame: true
+        usd_per_second: 0.15
+      - id: veo-3.1-generate-preview
+        label: Veo 3.1（品質優先）
+        resolutions: [720p, 1080p]
+        durations: [4, 6, 8]
+        supports_last_frame: true
+        usd_per_second: 0.40
+      - id: veo-3.0-fast-generate-001
+        label: Veo 3.0 Fast（穩定版）
+        resolutions: [720p, 1080p]
+        durations: [8]
+        supports_last_frame: false
+        usd_per_second: 0.15
+      - id: veo-3.0-generate-001
+        label: Veo 3.0（穩定版）
+        resolutions: [720p, 1080p]
+        durations: [8]
+        supports_last_frame: false
+        usd_per_second: 0.40
 video:
   audio_bitrate: 256k
   background_directory: assets/backgrounds

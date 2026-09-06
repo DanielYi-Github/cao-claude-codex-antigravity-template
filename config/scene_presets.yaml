@@ -1,0 +1,294 @@
+# 關鍵幀場景組合器的預設選項（artifacts/spec.md「關鍵幀場景組合器」一節）。
+#
+# 為什麼每個措辭都這麼短：FLUX.1-schnell 的訓練序列長度是 256 個 T5
+# token，而舊的 DEFAULT_KEYFRAME_PROMPT 實測是 861 個（3.4 倍），寫在
+# 後段的鏡頭與位置指令實際上不被遵守。組合後的目標是 ≤200 tokens，
+# tests/test_scene_composer.py 會對每一個選項組合斷言這個上限。**新增
+# 選項時請把每段控制在 15 個英文字以內，否則會把整個系統推回原點。**
+#
+# 語序也是刻意的：CLIP-L 分支硬性截斷在 77 個 token（約 59 個英文
+# 字），而 CLIP-L 的 pooled 向量主導整體構圖，所以最前面只放視覺內容
+# ——狗的身份 → 姿勢與地面接觸 → 相對家具的位置——不放頻道文案。
+
+base:
+  # 固定身份。chowchow_mascot 是 LoRA 訓練觸發詞。「一隻狗」只能靠正向
+  # 措辭保證：CFG 釘在 1.0，負向提示詞在這個專案裡本來就無效。
+  identity: >-
+    One chow chow dog, chowchow_mascot: dense cinnamon-red fur, thick mane,
+    black nose. Only one dog.
+
+  # 位置。刻意用相對物理錨點取代「佔畫面高度 10-15%」——模型不會量測
+  # 百分比。主人「不在場」用肯定敘述（空椅、無人的桌）描述，不用
+  # 「No person is visible」這種否定句：文字編碼器不擅長否定，反而容易
+  # 把人召喚出來。
+  placement: >-
+    Small in frame, two tables back, shoulder below the chair rail, beside an
+    empty pulled-out chair and a table with a laptop and a steaming mug.
+
+  # 物理接地。這段是「看起來像貼上去的」與「看起來真的在那裡」的差別：
+  # 接觸陰影、環境遮蔽、單一一致的光向、室內外亮度關係。
+  grounding_day: >-
+    Soft contact shadow where it meets the ground, one light direction
+    across dog and room, outside two stops brighter than in. Real wood grain,
+    documentary photograph.
+  # 夜晚與藍調時刻室內外亮度反轉，玻璃改為帶室內反射。
+  grounding_night: >-
+    Soft contact shadow where it meets the ground, one lamp direction
+    across dog and room, inside brighter than out, the glass faintly
+    reflecting it. Real wood grain, documentary photograph.
+
+axes:
+  # --- 場地 -----------------------------------------------------------
+  # 人類要求「有一面能看到整片大自然」。10 個場地裡 8 個是自然或戶外
+  # 景，參考歐洲與日本咖啡館：日式緣側、北歐田野、阿爾卑斯露台。
+  # paris_street 只做風格（Haussmann 石造街屋、鋅皮屋頂、鍛鐵陽台），
+  # 不放任何可辨識地標——沿用專案既有的「虛構、無可辨識地點」商用規則。
+  venue:
+    label_zh: 場地
+    options:
+      - id: forest_cabin
+        zh: 森林木屋
+        en: A timber cabin cafe
+        view: full-height glass onto tall conifers and moss
+      - id: lakeside
+        zh: 湖畔
+        en: A lakeside cafe
+        view: glass onto a still lake and low mountains beyond
+      - id: sea_cliff
+        zh: 海崖
+        en: A clifftop cafe
+        view: open ocean and a low horizon below
+      - id: alpine_terrace
+        zh: 山中露台
+        en: An alpine cafe under a timber eave
+        view: a deep valley and layered ridgelines
+      - id: engawa
+        zh: 日式緣側
+        en: An old Japanese house cafe on its engawa veranda
+        view: a moss garden with stepping stones and a maple
+      - id: nordic_meadow
+        zh: 北歐田野
+        en: A low Nordic timber cafe
+        view: a picture window onto meadow and distant fjord
+      - id: orchard
+        zh: 果園露台
+        en: A stone farmhouse cafe
+        view: an open terrace over rows of fruit trees
+      - id: riverside
+        zh: 河畔石橋
+        en: A cafe in an old stone river town
+        view: a slow river, a stone bridge, plane trees
+      - id: paris_street
+        zh: 巴黎街角
+        en: A corner cafe with tall French windows
+        view: a Haussmann stone street, zinc roofs, iron balconies
+      - id: greenhouse
+        zh: 溫室植物
+        en: A glasshouse cafe under a glazed roof
+        view: a garden pressing against the glass
+
+  # --- 視野 -----------------------------------------------------------
+  # 決定「室內看出去」還是「人就坐在戶外」，同時決定狗趴在什麼材質上
+  # （surface 會代入姿勢與接地兩段）。
+  aspect:
+    label_zh: 視野
+    options:
+      - id: inside_glass
+        zh: 落地窗內側
+        en: Framed from inside the glass.
+        surface: wide plank floor
+      - id: half_open
+        zh: 半開放露台
+        en: The wall folded open to the terrace.
+        surface: plank floor at the open threshold
+      - id: outdoor_seat
+        zh: 全戶外座位
+        en: The table outdoors, only the eave overhead.
+        surface: worn stone terrace
+
+  # --- 季節：影響植被與太陽路徑高度 -----------------------------------
+  season:
+    label_zh: 季節
+    options:
+      - id: spring
+        zh: 春
+        en: Spring, pale new leaves.
+        night: Spring, pale new leaves.
+      - id: summer
+        zh: 夏
+        en: Midsummer, dense dark-green foliage, a steep sun.
+        night: Midsummer, dense dark-green foliage.
+      - id: autumn
+        zh: 秋
+        en: Autumn, amber and rust foliage, a low sun.
+        night: Autumn, amber and rust foliage.
+      - id: winter
+        zh: 冬
+        en: Winter, bare branches, a very low sun.
+        night: Winter, bare branches.
+
+  # --- 天氣：影響光的擴散、陰影硬度、表面狀態 -------------------------
+  # diffuse: true 代表沒有方向性硬陽光，時間軸會改用 diffuse 措辭。
+  weather:
+    label_zh: 天氣
+    options:
+      - id: clear
+        zh: 晴
+        en: Clear sky, hard-edged shadows.
+        night: Clear night sky.
+        diffuse: false
+        ambient: steam keeps curling from the mug and dust drifts in the sunlight
+      - id: thin_cloud
+        zh: 薄雲
+        en: Thin high cloud, soft-edged shadows.
+        night: Thin high cloud.
+        diffuse: false
+        ambient: steam keeps curling from the mug and a leaf outside shifts slightly
+      - id: overcast
+        zh: 陰
+        en: Flat overcast, shadowless, muted colour.
+        night: Flat overcast, no moon.
+        diffuse: true
+        ambient: steam keeps curling from the mug and the air stays still
+      - id: rain
+        zh: 雨
+        en: Steady rain sheeting on the glass, dark saturated surfaces.
+        diffuse: true
+        ambient: rain keeps running down the glass and steam curls from the mug
+      - id: fog
+        zh: 霧
+        en: Fog, the view fading with distance.
+        diffuse: true
+        ambient: the fog outside drifts slowly and steam curls from the mug
+      - id: snow
+        zh: 雪
+        en: Snow falling, everything outside bright with blue shadows.
+        night: Snow falling, lit by the windows.
+        diffuse: true
+        ambient: snow keeps falling slowly outside and steam curls from the mug
+
+  # --- 時間 -----------------------------------------------------------
+  # sun = 有直射日光時的措辭；diffuse = 天氣是陰/雨/霧/雪時的措辭。
+  # 兩者分開寫是為了避免「陰天 + 黃金時刻的暖色斜射光」這種物理上不可能
+  # 的組合——光線不是可以自由亂搭的一軸，是（季節 × 天氣 × 時間）推導
+  # 出來的結果。
+  time:
+    label_zh: 時間
+    options:
+      - id: dawn
+        zh: 破曉
+        sun: Just after sunrise, a low orange sun raking level.
+        diffuse: Just after sunrise, dim blue-grey light.
+        night: false
+      - id: morning
+        zh: 上午
+        sun: Mid-morning, cool sunlight at a shallow angle.
+        diffuse: Mid-morning, pale even daylight.
+        night: false
+      - id: midday
+        zh: 正午
+        sun: Midday, steep sun and short hard shadows.
+        diffuse: Midday, bright flat white daylight.
+        night: false
+      - id: afternoon
+        zh: 午後
+        sun: Mid-afternoon, warm light angling across the floor.
+        diffuse: Mid-afternoon, soft grey daylight.
+        night: false
+      - id: golden
+        zh: 黃金時刻
+        sun: The hour before sunset, amber light, long shadows.
+        diffuse: The hour before sunset, dull warm-grey light.
+        night: false
+      - id: blue_hour
+        zh: 藍調時刻
+        sun: After sunset, deep blue outside against warm lamps inside.
+        diffuse: After sunset, deep blue outside against warm lamps inside.
+        night: true
+      - id: night
+        zh: 夜晚
+        sun: Night, warm lamplight inside, the view outside dark.
+        diffuse: Night, warm lamplight inside, the view outside dark.
+        night: true
+
+  # --- 姿勢 -----------------------------------------------------------
+  # 三種都是「靜態、可以收尾回到起始姿勢」的循環安全姿勢
+  # （chowchow-prompts.md 原則 2）。刻意不提供走路/跑跳：64 秒巨集循環
+  # 要求結尾必須精確對齊開頭。
+  # 一次只給一種姿勢——舊提示詞同時列出兩種要模型「二選一」，模型不會
+  # 執行 XOR，只會把兩種混成扭曲的姿態。
+  # hold/glance 是配套的動作提示詞，讓 sleep/lookup 兩支片子的措辭跟關鍵幀
+  # 一致，不會出現「關鍵幀在戶外露台、動作提示詞卻寫 lying on the cafe
+  # floor」。
+  pose:
+    label_zh: 姿勢
+    options:
+      - id: lying
+        zh: 趴睡
+        en: >-
+          Lying flat on the {surface}, belly pressed against it, front paws
+          forward, head resting on them, eyes half closed.
+        hold: >-
+          stays lying in the exact same pose, only its tail sweeps slowly and
+          its ribs rise and fall with calm breathing
+        glance: >-
+          lifts its head from its paws, glances once toward the empty chair,
+          then lowers its head back onto its paws exactly as it began
+      - id: sitting
+        zh: 坐著看主人
+        en: >-
+          Sitting upright and still on the {surface}, front paws planted
+          square, facing the empty chair.
+        hold: >-
+          stays sitting in the exact same pose, only its tail sweeps slowly
+          behind it and its chest rises and falls with calm breathing
+        glance: >-
+          turns its head slowly toward the view outside, holds the look
+          briefly, then turns back to the empty chair exactly as it began
+      - id: curled
+        zh: 蜷成一團
+        en: >-
+          Curled into a tight circle on the {surface}, tail tucked along its
+          flank, nose in its own fur.
+        hold: >-
+          stays curled in the exact same pose, only its flank rises and falls
+          with slow breathing and its fur shifts slightly
+        glance: >-
+          raises its head briefly, opens its eyes toward the empty chair, then
+          tucks its nose back into its fur exactly as it began
+
+  # --- 鏡頭 -----------------------------------------------------------
+  # 具體的鏡頭/光圈/機位比「professional photo」有效得多——FLUX 對真實
+  # 攝影規格的先驗反應很強。機位一律是坐著的人的視線高度且鎖死，因為
+  # 起訖幀必須對齊。
+  camera:
+    label_zh: 鏡頭
+    options:
+      - id: wide_24
+        zh: 廣角環境
+        en: 24mm at f/5.6, tripod at seated eye level, locked off, deep focus.
+      - id: doc_35
+        zh: 標準紀實
+        en: 35mm at f/4, tripod at seated eye level, locked off, deep focus.
+      - id: normal_50
+        zh: 中距淺景
+        en: 50mm at f/2.8, tripod at seated eye level, locked off, soft background.
+
+# 預設選取（沿用目前 64 秒巨集循環在用的場景意圖：森林、落地窗、趴睡）
+defaults:
+  venue: forest_cabin
+  aspect: inside_glass
+  season: autumn
+  weather: thin_cloud
+  time: afternoon
+  pose: lying
+  camera: doc_35
+
+# 組合合法性。目前只有一條硬規則：下雪只允許搭配冬天。
+rules:
+  requires:
+    - axis: weather
+      option: snow
+      needs_axis: season
+      needs_any: [winter]
+      message: 「雪」只能搭配「冬」。

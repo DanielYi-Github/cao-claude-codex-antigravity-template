@@ -447,6 +447,72 @@ CREATE INDEX IF NOT EXISTS idx_studio_tasks_status
 ON studio_tasks(status, id);
 """
 
+STUDIO_VEO_MIGRATION_ID = "0004_studio_veo"
+
+# Adds the columns and task types the Google Veo motion path needs
+# (artifacts/spec.md). Two distinct shapes in one migration:
+#
+# - episode_assets gains five plain columns. ALTER TABLE ADD COLUMN is
+#   enough (no CHECK constraint changes), so unlike 0003 this half needs
+#   no table rebuild. operation_id gets its own column rather than
+#   reusing comfyui_prompt_id: a Veo operation name is what lets a
+#   restarted worker resume polling a generation the user has ALREADY
+#   been charged for, and hiding that behind a ComfyUI-shaped name would
+#   make the resume logic unreadable.
+# - studio_tasks is rebuilt (copy -> drop -> rename) purely to widen its
+#   task_type CHECK list, the same way 0003 did, because SQLite cannot
+#   ALTER a CHECK constraint. Unlike 0003 this needs no
+#   rebuilds_referenced_tables: nothing foreign-keys INTO studio_tasks
+#   (it points at episode_assets, not the other way round), so dropping
+#   it does not trip foreign_keys=ON.
+#
+# The start_*/poll_* split is not stylistic. StudioWorker runs one thread,
+# one task, to completion; a handler that blocked polling Veo would park
+# that thread for the whole generation, serializing the sleep and lookup
+# clips and stalling every other task -- which is precisely the wait the
+# Veo path exists to remove (artifacts/spec.md 4.1).
+STUDIO_VEO_MIGRATION_SQL = """
+ALTER TABLE episode_assets ADD COLUMN provider TEXT;
+ALTER TABLE episode_assets ADD COLUMN model TEXT;
+ALTER TABLE episode_assets ADD COLUMN operation_id TEXT;
+ALTER TABLE episode_assets ADD COLUMN estimated_cost_usd REAL;
+ALTER TABLE episode_assets ADD COLUMN seam_score REAL;
+
+CREATE TABLE studio_tasks_v4 (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  episode_id INTEGER NOT NULL,
+  asset_id INTEGER,
+  task_type TEXT NOT NULL CHECK(task_type IN (
+    'generate_keyframe','generate_motion_test','generate_clip',
+    'upscale_clip','build_loop_preview','build_loop',
+    'generate_music_tracks','build_music_mix','render_final',
+    'start_veo_motion','poll_veo_motion',
+    'start_veo_clip','poll_veo_clip'
+  )),
+  status TEXT NOT NULL CHECK(status IN ('queued','running','done','failed')),
+  payload_json TEXT,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  error TEXT,
+  created_at TEXT NOT NULL,
+  started_at TEXT,
+  finished_at TEXT,
+  FOREIGN KEY(episode_id) REFERENCES episodes(id),
+  FOREIGN KEY(asset_id) REFERENCES episode_assets(id)
+);
+INSERT INTO studio_tasks_v4 (
+  id, episode_id, asset_id, task_type, status, payload_json,
+  attempts, error, created_at, started_at, finished_at
+)
+SELECT
+  id, episode_id, asset_id, task_type, status, payload_json,
+  attempts, error, created_at, started_at, finished_at
+FROM studio_tasks;
+DROP TABLE studio_tasks;
+ALTER TABLE studio_tasks_v4 RENAME TO studio_tasks;
+CREATE INDEX IF NOT EXISTS idx_studio_tasks_status
+ON studio_tasks(status, id);
+"""
+
 # Valid job statuses for migration validation
 VALID_JOB_STATUSES = {
     "created", "planning", "planned", "generating",
@@ -567,6 +633,9 @@ class StateDB:
             STUDIO_PRODUCTION_MIGRATION_SQL,
             rebuilds_referenced_tables=True,
         )
+        # Must run after 0003: it copies the task_type CHECK list 0003
+        # established and widens it again for the Veo start/poll pairs.
+        self._apply_simple_migration(STUDIO_VEO_MIGRATION_ID, STUDIO_VEO_MIGRATION_SQL)
 
     def _apply_simple_migration(
         self, migration_id: str, sql: str, *, rebuilds_referenced_tables: bool = False
@@ -1213,6 +1282,11 @@ class StateDB:
         allowed_extra = {
             "path", "sha256", "width", "height", "duration_seconds", "fps",
             "comfyui_prompt_id", "source_seed", "error",
+            # 0004_studio_veo: provenance for the Google Veo path. Never put
+            # an API key in any of these -- episode_assets rows are dumped
+            # verbatim by GET /api/episodes/{id} (artifacts/spec.md 7).
+            "provider", "model", "operation_id", "estimated_cost_usd",
+            "seam_score",
         }
         extra_items = [(k, v) for k, v in extra.items() if k in allowed_extra]
         set_prefix = "".join(f"{k}=?," for k, _ in extra_items)

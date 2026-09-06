@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 
 from .config import load_config
@@ -143,6 +144,7 @@ def main(argv: list[str] | None = None) -> None:
         import uvicorn
 
         from .providers.comfyui import ComfyUIClient
+        from .studio import veo as veo_support
         from .studio.app import create_app
         from .studio.stages import build_handlers
         from .studio.worker import StudioWorker
@@ -159,16 +161,58 @@ def main(argv: list[str] | None = None) -> None:
         remote_url = studio_cfg.get("comfyui_remote_base_url", "")
         remote_comfyui = ComfyUIClient(base_url=remote_url) if remote_url else None
         workflows_dir = (config.root / studio_cfg["comfyui_workflows_dir"]).resolve()
+
+        # Google Veo path (artifacts/spec.md). AppConfig already called
+        # load_dotenv, so a key in .env is visible here; when there isn't
+        # one the credential simply starts empty and tab 2 shows its
+        # input box instead. The key lives only in this in-memory holder,
+        # shared by the HTTP app and the worker's handlers -- it is never
+        # written to the database, a task payload, or a log line.
+        veo_credential = veo_support.VeoCredential(os.environ.get("GEMINI_API_KEY"))
+
+        def veo_client_factory():
+            """Build a Gemini client from whatever key is loaded right now.
+
+            Rebuilt per call rather than cached because the key can
+            arrive from tab 2 long after startup, and because nothing
+            holding a key should outlive the call that needed it.
+            """
+            key = veo_credential.get()
+            if not key:
+                return None
+            from .providers.gemini_visual import GeminiVisualClient
+
+            visual_cfg = config.section("visual")
+            return GeminiVisualClient(
+                api_key=key,
+                image_model=visual_cfg.get("image_model", "gemini-3.1-flash-image"),
+                video_model=studio_cfg.get("veo", {}).get(
+                    "default_model", "veo-3.1-fast-generate-preview"
+                ),
+            )
+
+        # Which models this key can actually reach, so the dropdown can
+        # grey out the rest. Best-effort and non-fatal: an empty result
+        # means "unknown", never "nothing available" (see veo.py).
+        reachable = veo_support.probe_available_models(
+            getattr(veo_client_factory(), "client", None)
+        )
         # build_loop / render_final have no handler yet (Stage 4/5, see
         # studio-architecture-plan.md 六) -- a task reaching those types
         # fails loudly with "no handler registered" instead of hanging.
         handlers = build_handlers(
-            config, local_comfyui, workflows_dir, remote_comfyui=remote_comfyui
+            config, local_comfyui, workflows_dir,
+            remote_comfyui=remote_comfyui,
+            veo_client_factory=veo_client_factory,
         )
         worker = StudioWorker(pipeline.db, handlers=handlers)
         worker.start()
         try:
-            app = create_app(pipeline.db, config, local_comfyui)
+            app = create_app(
+                pipeline.db, config, local_comfyui,
+                veo_credential=veo_credential,
+                veo_reachable_models=reachable,
+            )
             print(f"Lyria Studio: http://{args.host}:{args.port}")
             uvicorn.run(app, host=args.host, port=args.port)
         finally:

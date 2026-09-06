@@ -3,12 +3,13 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from conftest import install_scene_presets
 from fastapi.testclient import TestClient
 
 from lyria_auto.config import AppConfig
 from lyria_auto.db import StateDB
 from lyria_auto.studio.app import create_app
-from lyria_auto.studio.stages import DEFAULT_KEYFRAME_PROMPT, KEYFRAME_NEGATIVE_PROMPT
+from lyria_auto.studio.stages import KEYFRAME_NEGATIVE_PROMPT, default_keyframe_prompt
 from lyria_auto.studio.worker import StudioWorker
 
 
@@ -25,12 +26,17 @@ class _FakeComfyUIClient:
         self.interrupt_count += 1
 
 
-def _client(tmp_path, *, keyframe_batch_size: int = 12, comfyui: Any = None):
-    db = StateDB(tmp_path / "state.sqlite3")
-    config = AppConfig(
+def _config_for(tmp_path, *, keyframe_batch_size: int = 12) -> AppConfig:
+    return AppConfig(
         settings={"studio": {"keyframe_batch_size": keyframe_batch_size}},
         prompts={}, channels={}, root=tmp_path,
     )
+
+
+def _client(tmp_path, *, keyframe_batch_size: int = 12, comfyui: Any = None):
+    install_scene_presets(tmp_path)
+    db = StateDB(tmp_path / "state.sqlite3")
+    config = _config_for(tmp_path, keyframe_batch_size=keyframe_batch_size)
     app = create_app(db, config, comfyui or _FakeComfyUIClient())
     return db, TestClient(app)
 
@@ -87,7 +93,7 @@ def test_generate_keyframes_with_no_prompt_still_enqueues_a_task(tmp_path):
     assert len(tasks) == 1
     payload = json.loads(tasks[0]["payload_json"])
     assert payload == {
-        "positive_prompt": DEFAULT_KEYFRAME_PROMPT,
+        "positive_prompt": default_keyframe_prompt(_config_for(tmp_path)),
         "negative_prompt": KEYFRAME_NEGATIVE_PROMPT,
         "batch_size": 12,
     }
@@ -140,7 +146,7 @@ def test_cancel_motion_generation_interrupts_comfyui_and_lets_reject_pick_it_bac
     resp = client.post(f"/api/episodes/{episode['id']}/motion/cancel")
 
     assert resp.status_code == 200, resp.text
-    assert resp.json() == {"cancelled": 1}
+    assert resp.json() == {"cancelled": 1, "abandoned_paid_operations": 0}
     assert comfyui.interrupt_count == 1
     assert db.asset(sleep_id)["status"] == "failed"
 
@@ -172,7 +178,7 @@ def test_cancel_motion_generation_also_clears_a_queued_sibling(tmp_path):
 
     resp = client.post(f"/api/episodes/{episode['id']}/motion/cancel")
 
-    assert resp.json() == {"cancelled": 2}
+    assert resp.json() == {"cancelled": 2, "abandoned_paid_operations": 0}
     assert db.task(lookup_task)["status"] == "failed"
     assert db.asset(lookup_id)["status"] == "failed"
 
@@ -207,11 +213,13 @@ def test_keyframe_defaults_endpoint_returns_the_same_constants_generate_falls_ba
     resp = client.get("/api/keyframes/defaults")
 
     assert resp.status_code == 200, resp.text
-    assert resp.json() == {
-        "positive_prompt": DEFAULT_KEYFRAME_PROMPT,
-        "negative_prompt": KEYFRAME_NEGATIVE_PROMPT,
-        "batch_size": 8,
-    }
+    body = resp.json()
+    assert body["positive_prompt"] == default_keyframe_prompt(_config_for(tmp_path))
+    assert body["negative_prompt"] == KEYFRAME_NEGATIVE_PROMPT
+    assert body["batch_size"] == 8
+    # 頁籤 1 的晶片要知道預設是哪一組選擇才能把對應的晶片標成 active。
+    assert body["scene"]["venue"] and body["scene"]["time"]
+    assert body["estimated_tokens"] <= 256
 
 
 def test_regenerate_supersedes_the_previous_awaiting_review_batch(tmp_path):
@@ -594,12 +602,16 @@ def test_approving_motion_test_no_longer_auto_creates_a_clip(tmp_path):
         f"/api/episodes/{episode['id']}/assets/{keyframe_id}/approve",
         json={"expected_version": 1},
     )
-    motion_test = next(
-        a for a in client.get(f"/api/episodes/{episode['id']}").json()["assets"]
-        if a["kind"] == "motion_test"
-    )
+    # Seeded directly rather than via the keyframe fan-out: approving a
+    # keyframe no longer creates motion_test assets, because tab 2 now
+    # chooses the backend/model/resolution first (see
+    # test_visual_pipeline_walks_keyframe_through_loop_preview_with_
+    # fake_generators). What this test is about -- approving a
+    # motion_test must not cascade into a clip -- is unchanged.
+    motion_test_id = db.create_asset(episode["id"], "motion_test", "sleep")
+    motion_test = {"id": motion_test_id}
     db.transition_asset(
-        motion_test["id"], expected_status="queued", expected_version=0,
+        motion_test_id, expected_status="queued", expected_version=0,
         status="awaiting_review", source_seed=424242,
     )
 
@@ -730,7 +742,15 @@ def test_visual_pipeline_walks_keyframe_through_loop_preview_with_fake_generator
         pass
     assert _approve_all_awaiting(client, episode["id"])
 
-    # Fan-out created two motion_test tasks (sleep + lookup).
+    # Approving a keyframe no longer enqueues motion generation by
+    # itself: tab 2 now picks the backend (local ComfyUI or Google Veo)
+    # along with its model/resolution, so the reviewer has to press its
+    # own generate button. This walk exercises the local backend.
+    resp = client.post(
+        f"/api/episodes/{episode['id']}/motion/generate",
+        json={"provider": "comfyui"},
+    )
+    assert resp.status_code == 200, resp.text
     while worker.run_once():
         pass
     detail = client.get(f"/api/episodes/{episode['id']}").json()
@@ -824,3 +844,142 @@ def test_clip_to_loop_fan_in_still_walks_from_directly_approved_clips(tmp_path):
     artifact_resp = client.get(f"/api/artifact/{loop_assets[0]['id']}")
     assert artifact_resp.status_code == 200
     assert artifact_resp.content == b"fake-media-bytes"
+
+
+def test_motion_defaults_and_custom_prompts(tmp_path):
+    db, client = _client(tmp_path)
+    # 1. Test GET /api/motion/defaults
+    defaults_resp = client.get("/api/motion/defaults")
+    assert defaults_resp.status_code == 200
+    data = defaults_resp.json()
+    assert "sleep_prompt" in data
+    assert "lookup_prompt" in data
+    assert "presets" in data
+    assert "nature_breeze" in data["presets"]
+
+    # 2. Setup episode with approved keyframe
+    episode = client.post("/api/episodes", json={"slug": "ep-motion-prompts", "title": "Motion Prompts Test"}).json()
+    kf_path = tmp_path / "fake_keyframe.png"
+    kf_path.write_bytes(b"fake-image")
+    asset_id = db.create_asset(
+        episode["id"],
+        "keyframe",
+        "shared",
+        source_prompt="cafe with window view of a calm lake and green hills",
+    )
+    db.transition_asset(
+        asset_id,
+        expected_status="queued",
+        expected_version=0,
+        status="approved",
+        path=str(kf_path),
+    )
+
+    # 3. Test POST /api/episodes/{id}/motion/suggest-prompts
+    suggest_resp = client.post(f"/api/episodes/{episode['id']}/motion/suggest-prompts")
+    assert suggest_resp.status_code == 200
+    s_data = suggest_resp.json()
+    assert "scene_detected" in s_data
+    assert "sleep_prompt" in s_data
+    assert "lookup_prompt" in s_data
+
+    # 4. Test POST /api/episodes/{id}/motion/generate with custom sleep & lookup prompts
+    custom_sleep = "Custom sleep motion with gentle breeze and birds"
+    custom_lookup = "Custom lookup motion with lake ripples"
+    resp = client.post(
+        f"/api/episodes/{episode['id']}/motion/generate",
+        json={
+            "provider": "comfyui",
+            "sleep_prompt": custom_sleep,
+            "lookup_prompt": custom_lookup,
+        },
+    )
+    assert resp.status_code == 200
+    assets = db.assets_for_episode(episode["id"], kind="motion_test")
+    sleep_a = next(a for a in assets if a["role"] == "sleep")
+    lookup_a = next(a for a in assets if a["role"] == "lookup")
+    assert sleep_a["source_prompt"] == custom_sleep
+    assert lookup_a["source_prompt"] == custom_lookup
+
+
+
+# --- 場景組合器的 HTTP 介面 ------------------------------------------
+
+
+def test_scene_presets_endpoint_feeds_the_chip_rows(tmp_path):
+    _, client = _client(tmp_path)
+    body = client.get("/api/keyframes/scene-presets").json()
+    axis_ids = [axis["id"] for axis in body["axes"]]
+    assert axis_ids == ["venue", "aspect", "season", "weather", "time", "pose", "camera"]
+    assert set(body["defaults"]) == set(axis_ids)
+    assert body["limits"]["training_limit"] == 256
+    # 英文措辭刻意不外送：提示詞的語序留在後端（見 app.py 該路由的註解）。
+    first = body["axes"][0]["options"][0]
+    assert set(first) == {"id", "zh"}
+
+
+def test_composing_a_scene_returns_matching_motion_prompts(tmp_path):
+    _, client = _client(tmp_path)
+    resp = client.post(
+        "/api/keyframes/compose",
+        json={"scene": {"venue": "sea_cliff", "aspect": "outdoor_seat", "pose": "sitting"}},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert "open ocean" in body["positive_prompt"]
+    assert body["estimated_tokens"] <= 256
+    # 關鍵幀與兩支動作片必須共用同一組場景措辭，否則起始幀會跟文字互相矛盾。
+    for prompt in body["motion_prompts"].values():
+        assert "worn stone terrace" in prompt
+    assert body["labels_zh"]["venue"] == "海崖"
+
+
+def test_composing_a_physically_impossible_scene_is_rejected(tmp_path):
+    _, client = _client(tmp_path)
+    resp = client.post(
+        "/api/keyframes/compose",
+        json={"scene": {"weather": "snow", "season": "summer"}},
+    )
+    assert resp.status_code == 400
+    assert "雪" in resp.json()["detail"]
+
+
+def test_generating_with_a_scene_stores_the_matching_motion_prompts(tmp_path):
+    """頁籤 2 靠這個 payload 才拿得到跟關鍵幀同場景的動作文字。"""
+    db, client = _client(tmp_path)
+    episode_id = client.post(
+        "/api/episodes", json={"slug": "chowchow-scene", "title": "場景"}
+    ).json()["id"]
+    resp = client.post(
+        f"/api/episodes/{episode_id}/keyframes/generate",
+        json={"scene": {"venue": "lakeside", "aspect": "outdoor_seat", "pose": "curled"}},
+    )
+    assert resp.status_code == 200, resp.text
+
+    payload = json.loads(db.tasks_for_episode(episode_id)[-1]["payload_json"])
+    assert payload["scene"] == {
+        "venue": "lakeside", "aspect": "outdoor_seat", "pose": "curled",
+    }
+    assert set(payload["motion_prompts"]) == {"sleep", "lookup"}
+
+    scoped = client.get(f"/api/motion/defaults?episode_id={episode_id}").json()
+    assert scoped["sleep_prompt"] == payload["motion_prompts"]["sleep"]
+    assert "stays curled" in scoped["sleep_prompt"]
+    assert "worn stone terrace" in scoped["sleep_prompt"]
+    # 不帶 episode_id 時仍回全域預設（趴睡、室內木地板），舊行為不變。
+    assert "stays lying" in client.get("/api/motion/defaults").json()["sleep_prompt"]
+
+
+def test_motion_defaults_falls_back_for_episodes_made_before_scenes_existed(tmp_path):
+    """這個功能之前生的集數 payload 裡沒有 motion_prompts，必須安靜地退回
+    全域預設，而不是爆掉或回空字串。"""
+    db, client = _client(tmp_path)
+    episode_id = client.post(
+        "/api/episodes", json={"slug": "chowchow-legacy", "title": "舊集數"}
+    ).json()["id"]
+    db.enqueue_task(
+        episode_id, "generate_keyframe", payload={"positive_prompt": "手寫的舊提示詞"}
+    )
+    scoped = client.get(f"/api/motion/defaults?episode_id={episode_id}").json()
+    assert scoped["sleep_prompt"] == client.get("/api/motion/defaults").json()["sleep_prompt"]
+    assert scoped["sleep_prompt"]

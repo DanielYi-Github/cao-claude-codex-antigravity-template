@@ -455,12 +455,8 @@ def test_migration_failure_rolls_back_atomically(tmp_path, monkeypatch):
     raw.commit()
     raw.close()
 
-    try:
+    with pytest.raises(Exception):  # noqa: B017 - any failure proves the point
         StateDB(db_path)
-    except Exception:
-        pass
-    else:
-        raise AssertionError("expected the poisoned migration to raise")
 
     # The database must be left exactly as it was pre-migration: the
     # original episode_assets table intact with its old narrow CHECK (not

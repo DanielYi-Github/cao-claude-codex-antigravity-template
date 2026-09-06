@@ -5,6 +5,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from conftest import install_scene_presets
 from PIL import Image
 
 from lyria_auto.config import AppConfig
@@ -53,6 +54,7 @@ class FakeComfyUIClient:
 
 
 def make_config(root: Path, *, seed: int = 100) -> AppConfig:
+    install_scene_presets(root)
     return AppConfig(
         settings={"project": {"random_seed": seed, "workspace": "workspace"}},
         prompts={},
@@ -152,10 +154,10 @@ def test_generate_keyframe_fans_out_a_batch_into_separate_assets(tmp_path):
         assert asset["height"] == 8
         assert Path(asset["path"]).exists()
         assert asset["comfyui_prompt_id"] == "fake-prompt-id"
-        assert asset["source_prompt"] == stages.DEFAULT_KEYFRAME_PROMPT
+        assert asset["source_prompt"] == stages.default_keyframe_prompt(config)
 
     submitted = comfyui.submitted_workflows[0]
-    assert submitted["2"]["inputs"]["text"] == stages.DEFAULT_KEYFRAME_PROMPT
+    assert submitted["2"]["inputs"]["text"] == stages.default_keyframe_prompt(config)
     assert submitted["4"]["inputs"]["batch_size"] == 3
     assert submitted["5"]["inputs"]["seed"] == 100 + task_id
 
@@ -334,7 +336,8 @@ def test_generate_motion_test_uses_768x432_and_approved_keyframe(tmp_path, tiny_
     workflows_dir = tmp_path / "workflows"
     _write_workflows(workflows_dir)
     comfyui = FakeComfyUIClient(output_factory=lambda dest: dest.write_bytes(tiny_video_bytes))
-    handlers = stages.build_handlers(make_config(tmp_path), comfyui, workflows_dir)
+    config = make_config(tmp_path)
+    handlers = stages.build_handlers(config, comfyui, workflows_dir)
 
     _run(db, handlers)
 
@@ -346,7 +349,7 @@ def test_generate_motion_test_uses_768x432_and_approved_keyframe(tmp_path, tiny_
     assert Path(asset["path"]).exists()
 
     submitted = comfyui.submitted_workflows[0]
-    assert submitted["5"]["inputs"]["text"] == stages.DEFAULT_MOTION_PROMPTS["sleep"]
+    assert submitted["5"]["inputs"]["text"] == stages.default_motion_prompts(config)["sleep"]
     assert submitted["9"]["inputs"]["width"] == 768
     assert submitted["9"]["inputs"]["height"] == 432
     assert submitted["7"]["inputs"]["image"] == submitted["8"]["inputs"]["image"]

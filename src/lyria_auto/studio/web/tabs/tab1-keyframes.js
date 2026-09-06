@@ -9,10 +9,10 @@
 // in here actually runs.
 
 // Cached across every episode after the first fetch -- these are global
-// module constants/config (src/lyria_auto/studio/stages.py's DEFAULT_
-// KEYFRAME_PROMPT/KEYFRAME_NEGATIVE_PROMPT plus config/settings.yaml's
-// studio.keyframe_batch_size), not per-episode data, so one page load only
-// ever needs to ask the backend for them once.
+// module constants/config (the scene composer's default prompt plus
+// src/lyria_auto/studio/stages.py's KEYFRAME_NEGATIVE_PROMPT and
+// config/settings.yaml's studio.keyframe_batch_size), not per-episode data,
+// so one page load only ever needs to ask the backend for them once.
 let _cachedDefaults = null;
 
 async function _fetchDefaultsOnce(ctx) {
@@ -20,6 +20,133 @@ async function _fetchDefaultsOnce(ctx) {
     _cachedDefaults = await ctx.api('/api/keyframes/defaults');
   }
   return _cachedDefaults;
+}
+
+// --- 場景晶片 --------------------------------------------------------
+//
+// 為什麼每次點擊都要往後端跑一趟，而不是在前端把英文片語接起來：提示詞
+// 的**語序**本身就是這次修正的重點。FLUX schnell 的訓練序列長度是 256
+// 個 token，CLIP-L 分支更是硬性截斷在 77 個，所以「哪一句排在前面」直接
+// 決定模型會遵守什麼。把那個順序交給前端拼接，等於把最容易改壞的一層
+// 放到最關鍵的位置上。後端只回組好的整段文字。
+let _cachedPresets = null;
+
+// 目前選到的場景，**以 episode 為單位**。不能用單一個模組變數：從 A 集
+// （payload 裡有 scene）切回列表再進 B 集（全新、沒有 generate_keyframe
+// 任務）時，還原與預設兩條分支都被 `if (!scene)` 擋掉，A 集的選擇就會留
+// 在畫面上——晶片顯示 A 的場景、送出的 body.scene 也是 A 的，但提示詞
+// 框裡是 B 的預設文字。tab2-motion.js 的 _cachedMotionDefaults 是同一個
+// 道理。
+const _sceneByEpisode = new Map();
+
+// 上次真的重畫晶片時的狀態指紋。renderKeyframeTab 是輪詢迴圈每一拍都會
+// 呼叫的，沒有這個就會每拍都 host.innerHTML = ... 重建整排按鈕，跟正在
+// 點擊的人搶焦點。
+let _renderedChipsKey = null;
+
+function _currentScene(ctx) {
+  return _sceneByEpisode.get(ctx.getEpisodeId()) ?? null;
+}
+
+function _setScene(ctx, scene) {
+  _sceneByEpisode.set(ctx.getEpisodeId(), scene);
+}
+
+async function _fetchPresetsOnce(ctx) {
+  if (!_cachedPresets) {
+    _cachedPresets = await ctx.api('/api/keyframes/scene-presets');
+  }
+  return _cachedPresets;
+}
+
+function _renderTokenCount($, tokens, limit) {
+  const el = $('#tokenCount');
+  if (!el) return;
+  if (tokens == null) { el.textContent = ''; return; }
+  const over = tokens > limit;
+  const text = `約 ${tokens} / ${limit} tokens`;
+  if (el.textContent === text) return;
+  el.textContent = text;
+  el.classList.toggle('ok', !over);
+  el.classList.toggle('over', over);
+  el.title = over
+    ? `超過 FLUX schnell 的訓練長度 ${limit}——寫在後段的位置與鏡頭指令會被稀釋掉。`
+    : `FLUX schnell 的訓練序列長度是 ${limit} 個 token。`;
+}
+
+// 哪些選項在目前的選擇下是不合法的（例如「雪」只能配「冬」）。後端也會
+// 擋（回 400），這裡只是不要讓人點了才被拒絕。
+function _blockedOptions(constraints, scene) {
+  const blocked = new Set();
+  for (const rule of constraints || []) {
+    if (!rule.needs_any.includes(scene[rule.needs_axis])) {
+      blocked.add(`${rule.axis}:${rule.option}`);
+    }
+  }
+  return blocked;
+}
+
+async function _renderScenePresets(ctx, { disabled }) {
+  const { $ } = ctx;
+  const host = $('#scenePresets');
+  if (!host) return;
+  let presets;
+  try {
+    presets = await _fetchPresetsOnce(ctx);
+  } catch {
+    // 非關鍵：拿不到就退回純文字編輯，跟這個功能出現之前一樣。
+    host.innerHTML = '';
+    return;
+  }
+  let scene = _currentScene(ctx);
+  if (!scene) {
+    scene = { ...presets.defaults };
+    _setScene(ctx, scene);
+  }
+
+  // 狀態沒變就別重建 DOM——輪詢迴圈每一拍都會走到這裡。
+  const key = `${ctx.getEpisodeId()}|${disabled}|${JSON.stringify(scene)}`;
+  if (_renderedChipsKey === key) return;
+
+  const blocked = _blockedOptions(presets.constraints, scene);
+  host.innerHTML = presets.axes.map(axis => `
+    <div class="scene-axis">
+      <span class="scene-axis-label">${axis.label_zh}</span>
+      ${axis.options.map(opt => {
+        const isBlocked = blocked.has(`${axis.id}:${opt.id}`);
+        return `<button type="button" class="scene-chip${scene[axis.id] === opt.id ? ' active' : ''}"
+                 data-axis="${axis.id}" data-option="${opt.id}"
+                 ${isBlocked || disabled ? 'disabled' : ''}>${opt.zh}</button>`;
+      }).join('')}
+    </div>
+  `).join('');
+  _renderedChipsKey = key;
+
+  host.querySelectorAll('.scene-chip').forEach(btn => {
+    btn.onclick = () => _pickSceneOption(ctx, btn.dataset.axis, btn.dataset.option);
+  });
+}
+
+async function _pickSceneOption(ctx, axis, option) {
+  const { $ } = ctx;
+  const previous = _currentScene(ctx);
+  _setScene(ctx, { ...previous, [axis]: option });
+  try {
+    const composed = await ctx.api('/api/keyframes/compose', {
+      method: 'POST',
+      body: JSON.stringify({ scene: _currentScene(ctx) }),
+    });
+    _setScene(ctx, composed.scene);
+    $('#posPrompt').value = composed.positive_prompt;
+    _renderTokenCount($, composed.estimated_tokens, (_cachedPresets?.limits?.training_limit) || 256);
+    $('#sceneNotice').textContent = composed.warnings.join(' ');
+  } catch (err) {
+    // 不合法的組合（例如夏天下雪）回捲到上一個狀態，而不是把畫面留在
+    // 一個後端根本不接受的選擇上。
+    _setScene(ctx, previous);
+    $('#sceneNotice').textContent = err.message;
+  }
+  await _renderScenePresets(ctx, { disabled: false });
 }
 
 function _selectedBatchSize($) {
@@ -53,6 +180,10 @@ export async function renderKeyframeTab(data, ctx) {
     if (!$('#posPrompt').value && payload.positive_prompt) {
       $('#posPrompt').value = payload.positive_prompt;
     }
+    // 這一集上次是用哪組晶片生的就把晶片還原成那組。功能出現之前生的
+    // 集數 payload 裡沒有 scene，此時維持 null，晶片顯示為後端預設但不
+    // 會覆蓋已經填好的文字。
+    if (!_currentScene(ctx) && payload.scene) _setScene(ctx, payload.scene);
     if (!$('#negPrompt').value && payload.negative_prompt) {
       $('#negPrompt').value = payload.negative_prompt;
     }
@@ -71,6 +202,7 @@ export async function renderKeyframeTab(data, ctx) {
       if (!$('#posPrompt').value) $('#posPrompt').value = defaults.positive_prompt;
       if (!$('#negPrompt').value) $('#negPrompt').value = defaults.negative_prompt;
       if (_selectedBatchSize($) == null) _selectBatchSize($$, defaults.batch_size);
+      if (!_currentScene(ctx) && defaults.scene) _setScene(ctx, defaults.scene);
     } catch {
       // Non-critical -- worst case the boxes/buttons stay blank until
       // Generate succeeds once and the branch above takes over.
@@ -82,6 +214,9 @@ export async function renderKeyframeTab(data, ctx) {
   $('#generateKeyframes').disabled = isGenerating;
   $('#regenerateKeyframes').disabled = isGenerating || hasApproved;
   $$('.batch-size-btn').forEach(btn => { btn.disabled = isGenerating || hasApproved; });
+  // 晶片跟其他控制項一樣，在生成中或已定案之後就不該再動。
+  await _renderScenePresets(ctx, { disabled: isGenerating || hasApproved });
+  _renderTokenCount($, _estimateTokens($('#posPrompt').value), 256);
 
   if (hasApproved) {
     $('#generateKeyframes').classList.add('hidden');
@@ -152,6 +287,11 @@ export async function renderKeyframeTab(data, ctx) {
 
 export function bindKeyframeTab(ctx) {
   const { $, $$ } = ctx;
+  // 手動編輯時也要更新計數器——晶片組出來的一定在預算內，會超標的一律是
+  // 人自己貼進去的文字。
+  $('#posPrompt').addEventListener('input', () => {
+    _renderTokenCount($, _estimateTokens($('#posPrompt').value), 256);
+  });
   $('#generateKeyframes').onclick = () => generateKeyframes(ctx);
   $('#regenerateKeyframes').onclick = () => generateKeyframes(ctx);
   $('#cancelKeyframes').onclick = () => cancelKeyframes(ctx);
@@ -185,6 +325,10 @@ async function generateKeyframes(ctx) {
   const body = {};
   if (pos) body.positive_prompt = pos;
   if (neg) body.negative_prompt = neg;
+  // 把場景一起送上去，後端會順便把配套的兩段動作提示詞存進 task
+  // payload，頁籤 2 才拿得到跟這張關鍵幀同場景的動作文字。
+  const scene = _currentScene(ctx);
+  if (scene) body.scene = scene;
   const batchSize = _selectedBatchSize($);
   if (batchSize) body.batch_size = batchSize;
 
@@ -221,4 +365,16 @@ async function cancelKeyframes(ctx) {
   } finally {
     $('#cancelKeyframes').disabled = false;
   }
+}
+
+
+// scene_composer.py 的 estimate_t5_tokens() 的前端版本，係數必須跟後端
+// 一致（1.25/字 + 1.6/標點，是拿 ComfyUI 自帶的 T5 tokenizer 回歸出來
+// 的，刻意偏高）。只用在人手動編輯時的即時回饋；晶片組出來的數字一律
+// 以後端回傳的為準。
+function _estimateTokens(text) {
+  if (!text) return null;
+  const words = text.trim().split(/\s+/).filter(Boolean).length;
+  const punctuation = (text.match(/[.,;:()/-]/g) || []).length;
+  return Math.ceil(words * 1.25 + punctuation * 1.6);
 }

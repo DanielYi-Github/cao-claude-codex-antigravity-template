@@ -10,6 +10,21 @@ import yaml
 from lyria_auto.config import load_config
 from lyria_auto.errors import GenerationError
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def install_scene_presets(root: Path) -> Path:
+    """把真正的 config/scene_presets.yaml 複製到測試用的專案根目錄。
+
+    刻意複製正本而不是寫一份精簡的假檔：這份 YAML 的措辭長度本身就是被
+    測試的對象（全部組合必須落在 FLUX schnell 的 256 token 訓練長度內），
+    用假資料測等於什麼都沒測。
+    """
+    dest = root / "config" / "scene_presets.yaml"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(REPO_ROOT / "config" / "scene_presets.yaml", dest)
+    return dest
+
 
 def write_sine_audio(path: Path, duration: float = 25.0) -> None:
     """產生真實可播放的測試音訊（440Hz 正弦波，44.1kHz 立體聲）。

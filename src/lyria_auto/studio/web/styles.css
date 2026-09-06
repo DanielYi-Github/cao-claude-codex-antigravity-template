@@ -10,6 +10,12 @@ input, textarea { width: 100%; box-sizing: border-box; padding: 0.5rem; border-r
 .inline-form { display: flex; gap: 0.5rem; align-items: center; margin-bottom: 0.5rem; flex-wrap: wrap; }
 .inline-form input { flex: 1; min-width: 150px; margin-bottom: 0; }
 .inline-form label { margin-bottom: 0; white-space: nowrap; }
+.prompt-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem; }
+.prompt-grid .form-group { margin-bottom: 0; display: flex; flex-direction: column; }
+.prompt-grid textarea { flex: 1; min-height: 140px; margin-bottom: 0; resize: vertical; }
+@media (max-width: 768px) {
+  .prompt-grid { grid-template-columns: 1fr; }
+}
 
 /* Buttons */
 button { padding: 0.5rem 1rem; border: none; border-radius: 6px; cursor: pointer; font-size: 0.95rem; background: #3b82f6; color: white; }
@@ -17,6 +23,9 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
 button.reject { background: #ef4444; }
 button.stop-btn { background: #ef4444; margin-left: 0.5rem; }
 button.approve-btn { background: #10b981; width: 100%; margin-top: 0.5rem; }
+button.btn-sm { padding: 0.35rem 0.7rem; font-size: 0.85rem; border-radius: 4px; }
+.env-preset-btn { background: #f3f4f6; color: #374151; border: 1px solid #d1d5db; }
+.env-preset-btn:hover:not(:disabled) { background: #e5e7eb; }
 
 /* Batch size picker */
 .batch-size-group { display: flex; gap: 0.5rem; flex-wrap: wrap; }
@@ -55,3 +64,20 @@ button.approve-btn { background: #10b981; width: 100%; margin-top: 0.5rem; }
 .lightbox img { max-width: 90vw; max-height: 90vh; display: block; border-radius: 4px; }
 .close-btn { position: absolute; top: 1rem; right: 1rem; background: rgba(0,0,0,0.5); color: white; border: none; border-radius: 50%; width: 2rem; height: 2rem; padding: 0; display: flex; align-items: center; justify-content: center; font-size: 1.5rem; line-height: 1; cursor: pointer; }
 .close-btn:hover { background: rgba(0,0,0,0.8); }
+
+/* Tab 1 場景晶片 ------------------------------------------------------
+   沿用 .batch-size-btn 既有的視覺語彙（灰底 / 藍底 active），只是排成
+   多排、每排前面帶一個中文軸名。 */
+.scene-presets { display: flex; flex-direction: column; gap: 0.4rem; margin-bottom: 0.75rem; }
+.scene-axis { display: flex; gap: 0.4rem; align-items: baseline; flex-wrap: wrap; }
+.scene-axis-label { min-width: 3.5rem; font-size: 0.85rem; color: #6b7280; font-weight: 500; }
+.scene-chip { background: #e5e7eb; color: #374151; font-weight: 500; font-size: 0.85rem; padding: 0.25rem 0.6rem; }
+.scene-chip.active { background: #3b82f6; color: white; }
+.scene-chip:disabled { opacity: 0.35; cursor: not-allowed; }
+
+.token-count { font-size: 0.8rem; font-weight: 500; margin-left: 0.4rem; }
+.token-count.ok { color: #059669; }
+.token-count.over { color: #dc2626; }
+
+.field-hint { font-size: 0.78rem; color: #6b7280; margin: 0.35rem 0 0; line-height: 1.4; }
+.field-hint.warn { color: #b45309; }

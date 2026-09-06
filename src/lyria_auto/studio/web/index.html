@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <title>Lyria Studio</title>
-<link rel="stylesheet" href="/styles.css">
+<link rel="stylesheet" href="/styles.css?v=2">
 <link rel="stylesheet" href="/tabs/tab2-motion.css">
 </head>
 <body>
@@ -34,7 +34,7 @@
   <div class="tabs">
     <button class="tab-btn active" data-tab="1">1. 關鍵幀 (Keyframes)</button>
     <button class="tab-btn" data-tab="2">2. 動作 (Motion)</button>
-    <button class="tab-btn" data-tab="3">3. 升頻 (Upscale)</button>
+    <button class="tab-btn" data-tab="3">3. 1080p 正式版 (Production)</button>
     <button class="tab-btn" data-tab="4">4. 音樂 (Music)</button>
     <button class="tab-btn" data-tab="5">5. 最終成片 (Final)</button>
   </div>
@@ -42,13 +42,28 @@
   <div id="tab-1" class="tab-content active">
     <div class="card">
       <h3>生成關鍵幀</h3>
-      <div class="form-group">
-        <label for="posPrompt">正向提示詞 (Positive Prompt):</label>
-        <textarea id="posPrompt" rows="4"></textarea>
-      </div>
-      <div class="form-group">
-        <label for="negPrompt">負向提示詞 (Negative Prompt):</label>
-        <textarea id="negPrompt" rows="2"></textarea>
+
+      <!-- 場景晶片。每排對應 config/scene_presets.yaml 的一個軸，由
+           tabs/tab1-keyframes.js 從 /api/keyframes/scene-presets 填入。
+           點任何一顆都會重新向後端要一次組合好的提示詞——英文措辭與
+           **語序**留在後端，因為前 77 個 token 決定 CLIP-L 看到什麼，
+           那個順序不該交給前端拼接。 -->
+      <div id="scenePresets" class="scene-presets"></div>
+      <div id="sceneNotice" class="notice" aria-live="polite"></div>
+
+      <div class="prompt-grid" style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem;">
+        <div class="form-group" style="margin-bottom: 0; display: flex; flex-direction: column;">
+          <label for="posPrompt">正向提示詞 (Positive Prompt):
+            <span id="tokenCount" class="token-count"></span>
+          </label>
+          <textarea id="posPrompt" rows="6" style="flex: 1; min-height: 140px; margin-bottom: 0; resize: vertical;"></textarea>
+          <p class="field-hint">上面的晶片會即時重組這段文字，仍可手動編輯。</p>
+        </div>
+        <div class="form-group" style="margin-bottom: 0; display: flex; flex-direction: column;">
+          <label for="negPrompt">負向提示詞 (Negative Prompt):</label>
+          <textarea id="negPrompt" rows="6" style="flex: 1; min-height: 140px; margin-bottom: 0; resize: vertical;"></textarea>
+          <p class="field-hint warn">⚠️ 這個工作流程的 CFG 固定為 1.0，負向提示詞在 FLUX schnell 下<strong>不會生效</strong>。要排除的東西必須寫進正向提示詞（例如「只有一隻狗」）。</p>
+        </div>
       </div>
       <div class="form-group">
         <span id="batchSizeLabel">生成張數 (Batch Size):</span>
@@ -71,15 +86,11 @@
     </div>
   </div>
 
-  <div id="tab-2" class="tab-content hidden card">
-    <h3>2. 動作 (Motion)</h3>
-    <p>此功能尚未實作</p>
-  </div>
+  <!-- Filled in by tabs/tab2-motion.js. -->
+  <div id="tab-2" class="tab-content hidden card"></div>
 
-  <div id="tab-3" class="tab-content hidden card">
-    <h3>3. 升頻 (Upscale)</h3>
-    <p>此功能尚未實作</p>
-  </div>
+  <!-- Filled in by tabs/tab3-clips.js, same pattern as tab 2. -->
+  <div id="tab-3" class="tab-content hidden card"></div>
 
   <div id="tab-4" class="tab-content hidden card">
     <h3>4. 音樂 (Music)</h3>

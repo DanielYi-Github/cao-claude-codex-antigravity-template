@@ -18,6 +18,8 @@ from __future__ import annotations
 import json
 import math
 import tempfile
+import time
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -25,11 +27,13 @@ from PIL import Image
 
 from ..config import AppConfig
 from ..db import StateDB
-from ..errors import GenerationError
+from ..errors import GenerationError, VisualPollTransientError
 from ..media.audio import probe_audio
 from ..media.timeline import probe_video, verify_render
 from ..providers.comfyui import ComfyUIClient
 from ..utils import ensure_dir, run_command, sha256_file
+from . import veo as veo_support
+from .scene_composer import ComposedScene, SceneComposer
 
 # The Chow Chow LoRA workflow generates the dog natively inside each scene
 # (LoraLoader on a trained chowchow_mascot identity LoRA, node id 20 -- see
@@ -54,17 +58,41 @@ UPSCALE_WORKFLOW = "cafe-upscale-1080p-mps.json"
 # real cutout got pasted on top; the LoRA workflow draws the dog on purpose,
 # so that exclusion doesn't apply here anymore. Guarding against duplicate
 # dogs now happens the same way "no person in frame" already does -- via
-# explicit positive-prompt wording (see DEFAULT_KEYFRAME_PROMPT's "only one
-# dog" clause), since CFG=1 makes negative prompts inert either way.
-KEYFRAME_NEGATIVE_PROMPT = (
-    "blurry, low quality, worst quality, cartoon, illustration, CGI, 3D render, surreal, "
-    "impossible geometry, unstable architecture, camera shake, zoom, fast camera movement, "
-    "flicker, strobing, frozen motion, static motion, brand logo, trademark, readable sign, "
-    "watermark, subtitle, text, celebrity, public figure, "
-    "recognizable face, malformed hands, "
-    "extra fingers, fused fingers, extra limbs, deformed face, bad anatomy, bad proportions, "
-    "duplicate objects, oversaturated, overexposed, underexposed, cropped, out of frame"
-)
+# explicit positive-prompt wording (see scene_presets.yaml's base.identity
+# "Only one dog" clause), since CFG=1 makes negative prompts inert either way.
+KEYFRAME_NEGATIVE_PROMPT = """standing dog, dog standing, dog stands up, dog getting up, dog rising, walking dog, running dog, jumping dog, dog changing position, dog leaving the floor, alert standing posture, half-sitting half-lying dog, dog transitioning between poses, dog with confused or twisted posture
+
+dog as main subject, dog portrait, close-up dog, giant dog, oversized dog, dog too large, dog filling the frame, dog close to camera, foreground dog dominating composition, centered pet portrait, dramatic pet photography
+
+multiple dogs, two dogs, extra dog, duplicate dog, cloned dog, repeated dog, second dog, background dog, dog reflection that looks like another dog
+
+dog on chair, dog on sofa, dog on table, dog climbing furniture, dog jumping on furniture
+
+barking, open mouth barking, aggressive dog, running, playing, jumping, hyperactive dog, excited dog, exaggerated tail movement, spinning, fast movement, large body motion
+
+human visible, person visible, owner visible, human face, human head, human hands, human arms, human legs, human feet, human body, human silhouette, human reflection, person reflected in glass, person reflected in mirror, crowd
+
+celebrity, public figure, recognizable person, identifiable person
+
+cartoon, anime, illustration, drawing, painting, concept art, CGI, obvious CGI, 3D render, game render, plastic texture, artificial fur
+
+bad dog anatomy, malformed dog, deformed dog, distorted face, incorrect chow chow face, long snout, thin fur, extra legs, extra paws, fused paws, missing paws, duplicate tail, multiple tails, missing tail, detached tail, twisted body, stretched body, incorrect proportions
+
+warped furniture, deformed table, deformed chair, impossible architecture, crooked walls, floating objects, duplicated furniture, inconsistent perspective, impossible reflections
+
+shaky camera, handheld camera, camera movement, camera pan, camera tilt, camera zoom, dolly shot, orbit shot, fast camera movement, sudden framing change, jump cut, scene transition
+
+flickering, strobing, unstable lighting, changing architecture, morphing objects, temporal inconsistency, unstable dog appearance, changing fur color, changing dog size
+
+blurry, soft focus, low resolution, low quality, worst quality, compression artifacts, noise, over-sharpening
+
+overexposed, underexposed, crushed blacks, blown highlights, extreme contrast, oversaturated, neon colors, dramatic nightclub lighting, flashing lights
+
+logo, brand logo, trademark, readable sign, readable text, letters, subtitle, caption, watermark, UI, interface, channel logo
+
+cropped dog, partially missing dog, dog cut off by frame, out of frame
+
+flat matte painting sky, obvious green screen backdrop, screensaver wallpaper scenery, framed picture or poster on the wall showing the outdoor view, fake-looking window, oversaturated postcard-style view, identifiable real-world landmark visible through window"""
 
 # node 6 in cafe-flf2v-wan22-mps.json: same "inert under CFG=1" caveat as above.
 MOTION_NEGATIVE_PROMPT = (
@@ -74,64 +102,46 @@ MOTION_NEGATIVE_PROMPT = (
     "worst quality, oversaturated, overexposed, underexposed, cropped, out of frame"
 )
 
-# Fallback used only when an asset has no per-episode source_prompt of its
-# own (see generate_keyframe() below). Each new episode should normally write
-# its own source_prompt with a different pose/setting -- the LoRA no longer
-# ties the dog to one pre-rendered cutout, so there's no reason every episode
-# should reuse this exact scene. Keep the identity clause (breed, fur color,
-# build -- matching character-reference/chowchow/approved/identity-notes-v1.md)
-# and the chowchow_mascot trigger word at the front of any new variant; only
-# the pose/setting sentence in the middle is meant to change. The "only one
-# dog" clause matters: subject LoRAs can duplicate their subject, and with
-# CFG pinned to 1.0 a negative prompt can't fix that after the fact -- it has
-# to be ruled out in the positive text instead, the same way "no person in
-# frame" already is.
-DEFAULT_KEYFRAME_PROMPT = (
-    "A single chow chow dog, chowchow_mascot, fluffy reddish-brown fur, thick mane, black nose, "
-    "sturdy compact build -- only one dog is visible in the frame, no duplicate or additional "
-    "dogs. A fictional independent neighborhood cafe interior, no recognizable location. The dog "
-    "lies flat on the wooden floor, head resting low on its front paws, eyes half-closed, calm "
-    "and content posture. Beside the dog, a wooden chair is pulled out from a small table "
-    "as if someone just sat down, a laptop on the table glowing softly, a ceramic coffee mug "
-    "beside it with gentle steam rising -- the owner is implied by these objects but is "
-    "completely out of frame, no person or human body part visible anywhere in the shot. Soft "
-    "warm daylight through a nearby window, realistic wood and stone textures, documentary "
-    "photography, photorealistic, physically plausible materials and lighting, locked-off "
-    "camera, stable centered composition, no logos, no readable text, no identifiable people"
-)
+# 這裡以前是一段 626 字、861 個 T5 token 的字面提示詞，外加兩段寫死
+# 「lying flat on the cafe floor」的動作提示詞。三個問題：
+#
+# 1. FLUX.1-schnell 的訓練序列長度是 256 個 token。861 個不會被截斷
+#    （ComfyUI 的 T5XXLTokenizer 是 max_length=99999999），但遠離訓練
+#    分布的結果是排在後段的指令實際上不被遵守——實測第 256 個 token 落
+#    在窗景那段中間，也就是說「狗的位置與大小」「姿勢」「鏡頭與構圖」
+#    整整三段都在模型會遵守的範圍之外。人類回報的「狗的位置不準、物理
+#    不真實」就是這麼來的。
+# 2. 動作提示詞寫死了室內地板，關鍵幀一換場景就跟起始幀互相矛盾。
+# 3. 每換一個場景就要人工重寫整段長文字。
+#
+# 改成由 scene_composer 從 config/scene_presets.yaml 組出來：關鍵幀與
+# 兩支動作片是**一組**產出，共用同一組姿勢與場景措辭，而且全部 39690
+# 種組合都實測在 256 個 token 以內。詳見 artifacts/spec.md。
 
-# Motion 1 -- plays 7 of the 8 segments in the 64s macro-loop: the dog holds
-# its resting pose the whole clip, only breathing/tail/ambient motion.
-_SLEEP_PROMPT = (
-    "A continuous seamless 8-second loop video based on the image. The fluffy chow chow dog "
-    "remains lying flat on the cafe floor in the exact same pose throughout the clip, only its "
-    "tail wags gently a few times and its chest and back rise and fall slowly with calm "
-    "breathing, fur shifting subtly. Ambient environmental motion only: steam continues "
-    "curling gently from the coffee mug on the table, soft daylight shifts almost "
-    "imperceptibly. The owner stays completely out of frame throughout, only the chair, "
-    "laptop, and mug are visible. The dog's head and body position at the end of the clip "
-    "matches the very first frame exactly. No camera movement, no scene change, no new "
-    "objects, smooth continuous loop returning to the same composition, photorealistic, "
-    "physically plausible motion"
-)
 
-# Motion 2 -- plays 1 of the 8 segments, deliberately rare so it doesn't read
-# as mechanical repetition across a long-running video. Must end on exactly
-# the same pose as the start frame so the 64s loop closes seamlessly.
-_LOOKUP_PROMPT = (
-    "A continuous seamless 8-second loop video based on the image. The fluffy chow chow dog is "
-    "lying flat on the cafe floor. Partway through the clip, the dog slowly lifts its head up "
-    "from its front paws and turns to glance toward the empty chair and table where its owner "
-    "would be sitting, holds the glance for a brief moment, then gently lowers its head back "
-    "down onto its front paws and closes its eyes, returning to the exact same resting pose as "
-    "the very first frame. The owner remains completely out of frame throughout, only the "
-    "chair, laptop, and steaming mug are visible. Subtle ambient motion: soft daylight shifting "
-    "gently, steam rising from the mug. No camera movement, no scene change, no new objects, "
-    "smooth continuous loop where the end frame connects seamlessly back to the start frame, "
-    "photorealistic, physically plausible motion"
-)
+@lru_cache(maxsize=4)
+def _default_scene(root: Path) -> ComposedScene:
+    """預設場景。用 root 當快取鍵而不是無參數快取，是因為測試會用
+    tmp_path 當專案根目錄，跨測試共用同一份快取會互相污染。"""
+    return SceneComposer.from_root(root).compose()
 
-DEFAULT_MOTION_PROMPTS = {"sleep": _SLEEP_PROMPT, "lookup": _LOOKUP_PROMPT}
+
+def default_keyframe_prompt(config: AppConfig) -> str:
+    """某個 episode 沒有自己的 source_prompt 時的關鍵幀提示詞。
+
+    正常情況下每個 episode 都該有自己的一組選擇（頁籤 1 的晶片會組出來
+    並寫進 task payload），這只是最後的退路。
+    """
+    return _default_scene(config.root).keyframe_prompt
+
+
+def default_motion_prompts(config: AppConfig) -> dict[str, str]:
+    """與 default_keyframe_prompt 配套的 sleep / lookup 動作提示詞。
+
+    一定要跟關鍵幀同一次 compose() 產出，否則就會回到「關鍵幀在戶外
+    露台、動作提示詞卻寫室內地板」的老問題。
+    """
+    return dict(_default_scene(config.root).motion_prompts)
 
 _MOTION_DIMENSIONS = {"motion_test": (768, 432), "clip": (1024, 576)}
 
@@ -311,6 +321,8 @@ def build_handlers(
     workflows_dir: Path,
     *,
     remote_comfyui: ComfyUIClient | None = None,
+    veo_client_factory: Any | None = None,
+    sleeper: Any | None = None,
 ) -> dict[str, Any]:
     """Wire up the four ComfyUI-backed task handlers for StudioWorker.
 
@@ -320,8 +332,33 @@ def build_handlers(
     motion-test candidates are cheap/fast enough locally that moving them
     off-machine isn't worth the extra hop). generate_keyframe and
     generate_motion_test always stay on local_comfyui.
+
+    veo_client_factory is a zero-argument callable returning a client with
+    start_video/poll_video (GeminiVisualClient in production, a fake in
+    tests). It is a factory rather than an instance because the API key
+    may arrive from tab 2's credential box *after* this function ran, and
+    because the key must never be captured into anything long-lived --
+    the factory reads it from an in-memory VeoCredential at call time
+    (artifacts/spec.md 7).
+
+    sleeper is injected purely so tests don't actually wait: see
+    poll_veo_motion for why the pacing lives inside the handler.
     """
     clip_comfyui = remote_comfyui or local_comfyui
+    wait = sleeper if sleeper is not None else time.sleep
+
+    def _veo_client() -> Any:
+        if veo_client_factory is None:
+            raise GenerationError(
+                "Veo 生成路徑未啟用（沒有提供 veo_client_factory）"
+            )
+        client = veo_client_factory()
+        if client is None:
+            raise GenerationError(
+                "尚未設定 GEMINI_API_KEY——請在 .env 設定，或在頁籤 2 的"
+                "金鑰欄位輸入後再試一次"
+            )
+        return client
 
     def generate_keyframe(db: StateDB, task: Any) -> None:
         """Fan out one ComfyUI batch submission into N candidate assets.
@@ -336,7 +373,7 @@ def build_handlers(
         episode_id = task["episode_id"]
         episode = db.episode(episode_id)
         payload = json.loads(task["payload_json"]) if task["payload_json"] else {}
-        prompt = payload.get("positive_prompt") or DEFAULT_KEYFRAME_PROMPT
+        prompt = payload.get("positive_prompt") or default_keyframe_prompt(config)
         negative_prompt = payload.get("negative_prompt") or KEYFRAME_NEGATIVE_PROMPT
         batch_size = int(
             payload.get("batch_size")
@@ -428,7 +465,7 @@ def build_handlers(
         staged_name = comfyui.stage_input_file(
             keyframe["path"], name_hint=f"keyframe-{keyframe['id']}"
         )
-        prompt = asset["source_prompt"] or DEFAULT_MOTION_PROMPTS[role]
+        prompt = asset["source_prompt"] or default_motion_prompts(config)[role]
         # Carried over from the approved motion_test on advance (see app.py
         # _continue_after_approval), same as source_prompt -- so the 1024x576
         # production render starts from the exact noise the reviewer already
@@ -510,13 +547,31 @@ def build_handlers(
         episode = db.episode(episode_id)
         payload = json.loads(task["payload_json"]) if task["payload_json"] else {}
         clips = _resolve_bound_assets(db, episode_id, payload, source_kind)
+        # _concat_copy stream-copies; that is only safe while every input
+        # shares a resolution, frame rate and codec (see its docstring).
+        # Since the Veo path landed, an episode can hold a 1280x720@24fps
+        # Veo clip next to a 768x432@16fps ComfyUI one, and concatenating
+        # those produces a broken file that _verify_loop_duration -- which
+        # only checks length -- would happily wave through.
+        specs: dict[str, tuple[Any, ...]] = {}
         for role, clip in clips.items():
-            duration = _video_metadata(Path(clip["path"]))["duration_seconds"]
+            info = _video_metadata(Path(clip["path"]))
+            duration = info["duration_seconds"]
             if abs(duration - SEGMENT_SECONDS) > 0.5:
                 raise GenerationError(
                     f"{role} {source_kind} is {duration:.2f}s, expected {SEGMENT_SECONDS}s "
                     f"-- can't build an exact {SEGMENT_SECONDS * len(LOOP_SEQUENCE):.0f}s loop"
                 )
+            specs[role] = (info["width"], info["height"], round(info["fps"], 2))
+        if len(set(specs.values())) > 1:
+            detail = "、".join(
+                f"{role}={w}x{h}@{fps}fps" for role, (w, h, fps) in specs.items()
+            )
+            raise GenerationError(
+                f"要串接的片段規格不一致（{detail}）——串流複製需要完全相同的"
+                "解析度與影格率。請讓同一集的所有片段都用同一個生成來源、"
+                "同一個模型與同一個解析度重新產生"
+            )
 
         dest = _episode_dir(config, episode["slug"]) / f"{dest_kind}-shared-v0.mp4"
         _concat_copy([clips[role]["path"] for role in LOOP_SEQUENCE], dest)
@@ -599,6 +654,196 @@ def build_handlers(
             **metadata,
         )
 
+    # ------------------------------------------------------------------
+    # Google Veo path (artifacts/spec.md). Deliberately split into a
+    # start task and a poll task instead of one blocking handler:
+    # StudioWorker is a single thread running one task to completion, so
+    # a handler that looped on poll_video() would park that thread for
+    # the entire generation. Sleep and lookup would then generate one
+    # after the other and every other task would stall behind them --
+    # the exact wait this path exists to remove. With the split, both
+    # operations sit in flight at Google simultaneously and the thread
+    # only cycles cheap status checks.
+    # ------------------------------------------------------------------
+
+    def _strip_audio(source: Path, dest: Path) -> None:
+        """Copy the video stream only, dropping Veo's generated audio.
+
+        Veo 3.x on the Gemini Developer API always returns a soundtrack
+        -- generate_audio=False is rejected there (see _start_veo). That
+        track has to go before the clip is stored, for two reasons: the
+        finished video's audio is the Lyria music, not whatever Veo
+        invented; and _concat_copy stream-copies its inputs, so clips
+        whose stream layout differs cannot be concatenated safely.
+
+        -c:v copy means the video is never re-encoded, so this costs a
+        second or two and loses no quality.
+        """
+        run_command([
+            "ffmpeg", "-y", "-i", str(source), "-an", "-c:v", "copy", str(dest),
+        ])
+
+    def _veo_dest(db: StateDB, asset: Any, dir_kind: str) -> Path:
+        episode = db.episode(asset["episode_id"])
+        return (
+            _episode_dir(config, episode["slug"])
+            / f"{dir_kind}-{asset['role']}-v{asset['variant_index']}.mp4"
+        )
+
+    def _start_veo(db: StateDB, task: Any, *, dir_kind: str, poll_task_type: str) -> None:
+        asset = db.asset(task["asset_id"])
+        if asset is None:
+            raise GenerationError(f"找不到 asset id={task['asset_id']}")
+        payload = veo_support.load_payload(task)
+        entry = veo_support.validate_choice(
+            config, payload.get("model", ""), payload.get("resolution", "")
+        )
+        keyframe = _approved_asset(db, asset["episode_id"], "keyframe", "shared")
+        prompt = asset["source_prompt"] or default_motion_prompts(config)[asset["role"]]
+        client = _veo_client()
+        # No try/except around this call on purpose. A
+        # PaidStartUncertainError means the start may or may not have
+        # been billed; retrying could charge twice, so it propagates and
+        # the worker fails the task for a human to reconcile -- which is
+        # exactly the contract GeminiVisualClient._paid_start sets.
+        operation_id = client.start_video(
+            prompt,
+            keyframe["path"],
+            model=entry["id"],
+            resolution=payload["resolution"],
+            duration_seconds=veo_support.REQUIRED_DURATION_SECONDS,
+            negative_prompt=MOTION_NEGATIVE_PROMPT,
+            # Neither `seed` nor `generate_audio` is passed: the Gemini
+            # Developer API rejects both outright ("... is only supported
+            # in Gemini Enterprise Agent Platform mode"). Found by
+            # calling the real API with a throwaway key -- the SDK
+            # validates these client side, before authenticating, so it
+            # cost nothing to discover and no fake could have caught it.
+            #
+            # Consequences, both handled elsewhere: Veo clips on this
+            # path are not reproducible (the ComfyUI path still seeds
+            # normally), and they arrive WITH a Veo-generated audio
+            # track, which _poll_veo strips before the clip is stored --
+            # see _strip_audio there for why that matters.
+        )
+        width, height = veo_support.VEO_DIMENSIONS[payload["resolution"]]
+        ok = db.transition_asset(
+            asset["id"],
+            expected_status="running",
+            expected_version=asset["state_version"],
+            status="running",
+            operation_id=operation_id,
+            provider="google-veo",
+            model=entry["id"],
+            estimated_cost_usd=veo_support.estimate_cost_usd(entry, clips=1),
+            width=width,
+            height=height,
+        )
+        if not ok:
+            raise GenerationError(
+                f"無法為 asset {asset['id']} 記錄 Veo operation "
+                f"{operation_id}——狀態被其他流程改動過。這次生成已經計費，"
+                "請人工比對後再決定是否重跑"
+            )
+        # Hand off to the poll task and return immediately: this is what
+        # frees the worker thread so the sibling role can start too.
+        db.enqueue_task(
+            asset["episode_id"], poll_task_type, asset_id=asset["id"], payload=payload
+        )
+
+    def _poll_veo(db: StateDB, task: Any, *, dir_kind: str, poll_task_type: str) -> None:
+        asset = db.asset(task["asset_id"])
+        if asset is None:
+            raise GenerationError(f"找不到 asset id={task['asset_id']}")
+        operation_id = asset["operation_id"]
+        if not operation_id:
+            raise GenerationError(
+                f"asset {asset['id']} 沒有 Veo operation id，無法輪詢"
+            )
+        payload = veo_support.load_payload(task)
+
+        def requeue() -> None:
+            db.enqueue_task(
+                asset["episode_id"], poll_task_type,
+                asset_id=asset["id"], payload=payload,
+            )
+
+        # Pacing lives here rather than between re-enqueues because the
+        # worker loops immediately whenever the queue is non-empty --
+        # re-enqueuing without a wait would spin the API. One thread
+        # sleeping this long does briefly delay other queued tasks; that
+        # is the accepted cost of not adding a scheduled-task column.
+        wait(float(veo_support.veo_section(config).get("poll_interval_seconds", 15)))
+
+        dest = _veo_dest(db, asset, dir_kind)
+        # Downloaded to a .raw file first so `dest` only ever exists as
+        # the finished, audio-free clip -- a half-processed file at the
+        # real path would be served by /api/artifact as if it were done.
+        raw = dest.with_name(f"{dest.stem}.raw{dest.suffix}")
+        client = _veo_client()
+        try:
+            poll = client.poll_video(operation_id, raw)
+        except VisualPollTransientError:
+            # The operation is still valid and already paid for -- keep
+            # polling it rather than failing the asset.
+            requeue()
+            return
+        if not poll.done:
+            requeue()
+            return
+        if poll.error:
+            raise GenerationError(f"Veo 生成失敗（operation {operation_id}）：{poll.error}")
+
+        try:
+            _strip_audio(raw, dest)
+        finally:
+            raw.unlink(missing_ok=True)
+
+        metadata = _video_metadata(dest)
+        expected = veo_support.VEO_DIMENSIONS[payload["resolution"]]
+        if (metadata["width"], metadata["height"]) != expected:
+            raise GenerationError(
+                f"Veo 回傳的影片是 {metadata['width']}x{metadata['height']}，"
+                f"但下單的是 {payload['resolution']}（{expected[0]}x{expected[1]}）"
+            )
+        # Measures whether the clip actually ends where it began. This is
+        # the only check that catches a model silently ignoring
+        # last_frame, which would leave a clip that does not loop.
+        seam = veo_support.seam_score(dest, dest.parent)
+        ok = db.transition_asset(
+            asset["id"],
+            expected_status="running",
+            expected_version=asset["state_version"],
+            status="awaiting_review",
+            path=str(dest),
+            sha256=sha256_file(dest),
+            seam_score=seam,
+            **metadata,
+        )
+        if not ok:
+            # Most likely a cancel landed while this poll was in flight,
+            # which moves the asset to 'failed'. Without raising, the
+            # worker would mark the task 'done' and this clip -- paid
+            # for, downloaded and processed -- would sit on disk with no
+            # asset row pointing at it and nothing shown in the UI.
+            raise GenerationError(
+                f"asset {asset['id']} 的狀態在輪詢期間被改動（可能是被終止），"
+                f"無法標記為待審核。影片已經下載並付費，檔案留在 {dest}，"
+                "請人工確認後再決定是否重跑"
+            )
+
+    def start_veo_motion(db: StateDB, task: Any) -> None:
+        _start_veo(db, task, dir_kind="motion_test", poll_task_type="poll_veo_motion")
+
+    def poll_veo_motion(db: StateDB, task: Any) -> None:
+        _poll_veo(db, task, dir_kind="motion_test", poll_task_type="poll_veo_motion")
+
+    def start_veo_clip(db: StateDB, task: Any) -> None:
+        _start_veo(db, task, dir_kind="clip_1080p", poll_task_type="poll_veo_clip")
+
+    def poll_veo_clip(db: StateDB, task: Any) -> None:
+        _poll_veo(db, task, dir_kind="clip_1080p", poll_task_type="poll_veo_clip")
+
     return {
         "generate_keyframe": generate_keyframe,
         "generate_motion_test": generate_motion_test,
@@ -607,4 +852,8 @@ def build_handlers(
         "build_loop_preview": build_loop_preview,
         "build_loop": build_loop,
         "render_final": render_final,
+        "start_veo_motion": start_veo_motion,
+        "poll_veo_motion": poll_veo_motion,
+        "start_veo_clip": start_veo_clip,
+        "poll_veo_clip": poll_veo_clip,
     }

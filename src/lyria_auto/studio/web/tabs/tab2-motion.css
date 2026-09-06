@@ -104,3 +104,37 @@
   color: #059669;
   font-weight: 500;
 }
+
+/* Tab 2 generate controls (Veo / local ComfyUI backend picker). */
+.generate-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  align-items: flex-end;
+  margin-bottom: 0.75rem;
+}
+.generate-controls .form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 12rem;
+  flex: 1 1 12rem;
+}
+.generate-controls label {
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+.generate-controls select {
+  padding: 0.4rem;
+  font: inherit;
+}
+.generate-controls select:disabled {
+  opacity: 0.5;
+}
+#veoCostNote {
+  margin: 0.25rem 0 0.75rem;
+}
+.motion-card .provenance {
+  font-size: 0.8rem;
+  margin: 0.35rem 0 0;
+}

@@ -145,23 +145,60 @@ class GeminiVisualClient:
         except Exception as exc:
             raise VisualGenerationError(f"Gemini 圖片生成失敗：{exc}") from exc
 
-    def start_video(self, prompt: str, frame_path: str | Path) -> str:
+    def start_video(
+        self,
+        prompt: str,
+        frame_path: str | Path,
+        *,
+        model: str | None = None,
+        resolution: str = "1080p",
+        duration_seconds: int = 8,
+        aspect_ratio: str = "16:9",
+        negative_prompt: str | None = None,
+        seed: int | None = None,
+        generate_audio: bool | None = None,
+    ) -> str:
+        """Start one image-to-video generation and return its operation name.
+
+        Every knob is a per-call keyword whose default reproduces the
+        original hard-coded behaviour exactly, so the existing
+        visual_preflight / visual_workflow callers are unaffected while
+        the studio console can drive model and resolution from its own
+        dropdowns (artifacts/spec.md 6).
+
+        `last_frame` is pinned to the same image as `image`: that is the
+        entire mechanism by which the clip loops -- it ends on the frame
+        it started from. A model that ignores last_frame produces a clip
+        that does not loop, which is why studio/veo.py measures the seam
+        afterwards rather than trusting the flag.
+
+        generate_audio stays None (field omitted) unless a caller asks:
+        the studio path passes False because a Veo audio track both costs
+        more and breaks the stream-copy assumptions of the loop builder.
+        """
         try:
             from google.genai import types
 
             frame = types.Image.from_file(location=str(frame_path))
+            config_kwargs: dict[str, Any] = {
+                "last_frame": frame,
+                "number_of_videos": 1,
+                "duration_seconds": duration_seconds,
+                "resolution": resolution,
+                "aspect_ratio": aspect_ratio,
+            }
+            if negative_prompt is not None:
+                config_kwargs["negative_prompt"] = negative_prompt
+            if seed is not None:
+                config_kwargs["seed"] = seed
+            if generate_audio is not None:
+                config_kwargs["generate_audio"] = generate_audio
             operation = self._paid_start(
                 lambda: self.client.models.generate_videos(
-                    model=self.video_model,
+                    model=model or self.video_model,
                     prompt=prompt,
                     image=frame,
-                    config=types.GenerateVideosConfig(
-                        last_frame=frame,
-                        number_of_videos=1,
-                        duration_seconds=8,
-                        resolution="1080p",
-                        aspect_ratio="16:9",
-                    ),
+                    config=types.GenerateVideosConfig(**config_kwargs),
                 )
             )
             if not getattr(operation, "name", None):

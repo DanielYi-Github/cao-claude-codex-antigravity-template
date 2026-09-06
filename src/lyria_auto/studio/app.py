@@ -12,6 +12,9 @@ next 'awaiting_review' asset -- it never skips a gate.
 
 from __future__ import annotations
 
+import json
+import logging
+import os
 from pathlib import Path
 from typing import Any
 
@@ -23,9 +26,21 @@ from pydantic import BaseModel
 from ..config import AppConfig
 from ..db import StateDB
 from ..providers.comfyui import ComfyUIClient
-from .stages import DEFAULT_KEYFRAME_PROMPT, KEYFRAME_NEGATIVE_PROMPT
+from . import veo as veo_support
+from .scene_composer import (
+    PRESET_MATRIX_CEILING,
+    T5_TRAINING_LIMIT,
+    SceneComposer,
+    SceneSelectionError,
+)
+from .stages import (
+    KEYFRAME_NEGATIVE_PROMPT,
+    default_keyframe_prompt,
+    default_motion_prompts,
+)
 
 WEB_ROOT = Path(__file__).resolve().parent / "web"
+logger = logging.getLogger(__name__)
 
 # episode_assets.kind -> the studio_tasks.task_type that produces the next
 # kind in the pipeline, and the kind each stage feeds into once approved.
@@ -65,6 +80,30 @@ class GenerateKeyframesRequest(BaseModel):
     positive_prompt: str | None = None
     negative_prompt: str | None = None
     batch_size: int | None = None
+    # 頁籤 1 的晶片選到的場景（例如 {"venue": "lakeside", "time": "golden"}）。
+    # 帶上來的話，配套的兩支動作提示詞會一起存進 task payload，頁籤 2 才
+    # 拿得到跟這張關鍵幀同場景的動作文字——否則就會回到「關鍵幀在湖畔
+    # 露台、動作提示詞卻寫室內地板」。
+    scene: dict[str, str] | None = None
+
+
+class ComposeSceneRequest(BaseModel):
+    scene: dict[str, str] | None = None
+
+
+class GenerateMotionRequest(BaseModel):
+    """Tab 2's generate controls. provider picks the backend; model and
+    resolution are only meaningful (and only validated) for 'veo'."""
+
+    provider: str = "veo"
+    model: str | None = None
+    resolution: str | None = None
+    sleep_prompt: str | None = None
+    lookup_prompt: str | None = None
+
+
+class VeoCredentialRequest(BaseModel):
+    api_key: str
 
 
 class ApproveRequest(BaseModel):
@@ -77,8 +116,64 @@ class RejectRequest(BaseModel):
     new_prompt: str | None = None
 
 
-def create_app(db: StateDB, config: AppConfig, local_comfyui: ComfyUIClient) -> FastAPI:
+def create_app(
+    db: StateDB,
+    config: AppConfig,
+    local_comfyui: ComfyUIClient,
+    *,
+    veo_credential: veo_support.VeoCredential | None = None,
+    veo_reachable_models: set[str] | None = None,
+) -> FastAPI:
     app = FastAPI(title="Lyria Studio")
+    # Shared with the worker's handler factory (see cli.py): tab 2's
+    # credential box writes the key here and the handlers read it back at
+    # call time. It never touches the database or a log line
+    # (artifacts/spec.md 7).
+    credential = veo_credential if veo_credential is not None else veo_support.VeoCredential()
+    reachable = veo_reachable_models or set()
+
+    # Every start_veo_* task type, counted together against the
+    # per-episode cap: counting only the motion ones would let the 1080p
+    # stage spend past a limit the reviewer thought applied to the whole
+    # episode.
+    _VEO_START_TASK_TYPES = ("start_veo_motion", "start_veo_clip")
+
+    def _veo_preflight(episode_id: int, model: str | None, resolution: str | None,
+                       *, default_resolution: str) -> tuple[dict[str, Any], str]:
+        """Shared gate for both paid Veo stages.
+
+        Order matters: an impossible model/resolution combination is
+        reported before the credential check, so someone who picked one
+        is told *that* rather than being sent to fix a key and hitting
+        the same wall afterwards. Nothing here can reach a paid endpoint.
+        """
+        section = veo_support.veo_section(config)
+        if not section.get("enabled", True):
+            raise HTTPException(409, "設定檔已停用 Veo 路徑（studio.veo.enabled）")
+        model_id = model or section.get("default_model") or ""
+        chosen = resolution or default_resolution
+        try:
+            entry = veo_support.validate_choice(config, model_id, chosen)
+        except veo_support.VeoConfigError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        if not credential.is_set:
+            raise HTTPException(
+                409,
+                "尚未設定 GEMINI_API_KEY——請在 .env 設定後重啟，"
+                "或在下方金鑰欄位輸入",
+            )
+        started = sum(
+            1 for t in db.tasks_for_episode(episode_id)
+            if t["task_type"] in _VEO_START_TASK_TYPES
+        )
+        cap = int(section.get("max_starts_per_episode", 12))
+        if started + 2 > cap:
+            raise HTTPException(
+                409,
+                f"這一集的 Veo 付費啟動次數已達上限（{cap} 次，已用 {started} 次）"
+                "——這是防手滑的保險，要繼續請調整 studio.veo.max_starts_per_episode",
+            )
+        return entry, chosen
 
     def _asset_in_episode(episode_id: int, asset_id: int) -> Any:
         asset = db.asset(asset_id)
@@ -95,10 +190,16 @@ def create_app(db: StateDB, config: AppConfig, local_comfyui: ComfyUIClient) -> 
             # UI doesn't keep showing 11 stale candidates next to the one
             # that's now moving through the pipeline.
             db.supersede_assets(episode_id, "keyframe", "shared")
-            # Fan out: the one shared keyframe unlocks both motion-test roles.
-            for role in ("sleep", "lookup"):
-                new_id = db.create_asset(episode_id, "motion_test", role)
-                db.enqueue_task(episode_id, "generate_motion_test", asset_id=new_id)
+            # Approving a keyframe unlocks tab 2 and stops there. It used
+            # to immediately create both motion_test assets and enqueue
+            # generate_motion_test for them, but since the Veo path landed
+            # there are two possible backends with different models,
+            # resolutions and costs -- choosing one on the reviewer's
+            # behalf here would either start burning the local GPU time
+            # they were trying to avoid or spend money they never
+            # confirmed. Tab 2's own POST .../motion/generate creates the
+            # assets and enqueues the work, the same shape the
+            # loop_preview branch below already uses for tab 3.
             return
 
         if kind in _NEXT_KIND:
@@ -139,6 +240,32 @@ def create_app(db: StateDB, config: AppConfig, local_comfyui: ComfyUIClient) -> 
         # (existing tracks/jobs tables), a later stage of this rollout --
         # see studio-architecture-plan.md Part 六. Nothing to auto-continue yet.
 
+    _composer_cache: list[SceneComposer] = []
+
+    def _composer() -> SceneComposer:
+        """場景組合器。第一次用到才讀檔並快取——但故意不用模組層級的常數，
+        因為測試會用 tmp_path 當專案根目錄，一個 app 實例對應一個 config。"""
+        if not _composer_cache:
+            _composer_cache.append(SceneComposer.from_root(config.root))
+        return _composer_cache[0]
+
+    def _episode_motion_prompts(
+        episode_id: int, *, fallback: dict[str, str]
+    ) -> dict[str, str]:
+        """這一集的關鍵幀是用哪個場景生的，就回傳那個場景配套的動作提示詞。
+
+        來源是最後一次 generate_keyframe 任務的 payload——頁籤 1 用晶片組
+        場景時把 motion_prompts 一起存了進去。舊的集數（在這個功能之前生
+        的）payload 裡沒有這個鍵，就退回全域預設，行為跟以前一樣。
+        """
+        for task in reversed(db.tasks_for_episode(episode_id)):
+            if task["task_type"] != "generate_keyframe" or not task["payload_json"]:
+                continue
+            stored = (json.loads(task["payload_json"]) or {}).get("motion_prompts")
+            if isinstance(stored, dict) and {"sleep", "lookup"} <= stored.keys():
+                return {"sleep": stored["sleep"], "lookup": stored["lookup"]}
+        return fallback
+
     @app.get("/api/episodes")
     def list_episodes() -> list[dict[str, Any]]:
         return db.list_episodes()
@@ -161,10 +288,48 @@ def create_app(db: StateDB, config: AppConfig, local_comfyui: ComfyUIClient) -> 
         click. Not episode-scoped: these are the same values generate_
         keyframes() below falls back to.
         """
+        composed = _composer().compose()
         return {
-            "positive_prompt": DEFAULT_KEYFRAME_PROMPT,
+            "positive_prompt": composed.keyframe_prompt,
             "negative_prompt": KEYFRAME_NEGATIVE_PROMPT,
             "batch_size": config.section("studio").get("keyframe_batch_size", 12),
+            "scene": composed.selection,
+            "estimated_tokens": composed.estimated_tokens,
+        }
+
+    @app.get("/api/keyframes/scene-presets")
+    def keyframe_scene_presets() -> dict[str, Any]:
+        """頁籤 1 那幾排可點擊晶片的資料來源。
+
+        只送 id 與中文標籤過去，英文措辭留在後端：提示詞的**語序**是這次
+        修正的重點（前 77 個 token 決定 CLIP-L 看到什麼），讓前端自己拼
+        接等於把那個順序交給最容易改壞的一層。
+        """
+        composer = _composer()
+        return {
+            "axes": composer.axes(),
+            "defaults": composer.defaults(),
+            "constraints": composer.constraints(),
+            "limits": {
+                "training_limit": T5_TRAINING_LIMIT,
+                "preset_ceiling": PRESET_MATRIX_CEILING,
+            },
+        }
+
+    @app.post("/api/keyframes/compose")
+    def keyframe_compose(body: ComposeSceneRequest) -> dict[str, Any]:
+        """把一組晶片選擇組成關鍵幀與兩支動作提示詞。"""
+        try:
+            composed = _composer().compose(body.scene)
+        except SceneSelectionError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return {
+            "positive_prompt": composed.keyframe_prompt,
+            "motion_prompts": composed.motion_prompts,
+            "scene": composed.selection,
+            "labels_zh": composed.labels_zh,
+            "estimated_tokens": composed.estimated_tokens,
+            "warnings": composed.warnings,
         }
 
     @app.post("/api/episodes/{episode_id}/keyframes/generate")
@@ -215,11 +380,23 @@ def create_app(db: StateDB, config: AppConfig, local_comfyui: ComfyUIClient) -> 
         # a default-prompt batch and there'd be no way for the frontend to
         # show "what generated these candidates" or pre-fill the prompt
         # boxes for editing.
+        # 有帶場景就把配套的動作提示詞一起存進 payload，頁籤 2 的
+        # /api/motion/defaults 會讀回來，讓兩支動作片跟這張關鍵幀同場景。
+        motion_prompts: dict[str, str] | None = None
+        if body.scene:
+            try:
+                motion_prompts = _composer().compose(body.scene).motion_prompts
+            except SceneSelectionError as exc:
+                raise HTTPException(400, str(exc)) from exc
         payload: dict[str, Any] = {
-            "positive_prompt": body.positive_prompt or DEFAULT_KEYFRAME_PROMPT,
+            "positive_prompt": body.positive_prompt or default_keyframe_prompt(config),
             "negative_prompt": body.negative_prompt or KEYFRAME_NEGATIVE_PROMPT,
             "batch_size": body.batch_size or config.section("studio").get("keyframe_batch_size", 12),
         }
+        if body.scene:
+            payload["scene"] = body.scene
+        if motion_prompts:
+            payload["motion_prompts"] = motion_prompts
         task_id = db.enqueue_task(episode_id, "generate_keyframe", payload=payload)
         if episode["status"] == "draft":
             db.update_episode_status(episode_id, "in_progress")
@@ -247,6 +424,279 @@ def create_app(db: StateDB, config: AppConfig, local_comfyui: ComfyUIClient) -> 
             episode_id, {"generate_keyframe"}, error="使用者手動終止生成"
         )
         return {"cancelled": cancelled}
+
+    @app.get("/api/veo/config")
+    def veo_config() -> dict[str, Any]:
+        """Everything tab 2's dropdowns need, in one call.
+
+        `key_masked` is the only thing ever derived from the API key --
+        the key itself is never serialized anywhere (artifacts/spec.md 7).
+        """
+        section = veo_support.veo_section(config)
+        return {
+            "enabled": bool(section.get("enabled", True)),
+            "key_configured": credential.is_set,
+            "key_masked": credential.masked,
+            "default_model": section.get("default_model"),
+            "default_resolution": section.get("default_resolution", "720p"),
+            "duration_seconds": veo_support.REQUIRED_DURATION_SECONDS,
+            "pricing_verified": bool(section.get("pricing_verified", False)),
+            "pricing_snapshot_date": section.get("pricing_snapshot_date"),
+            "models": veo_support.catalog_for_ui(config, reachable),
+        }
+
+    @app.post("/api/veo/credential")
+    def set_veo_credential(body: VeoCredentialRequest) -> dict[str, Any]:
+        """Accept an API key typed into tab 2 and hold it in memory only.
+
+        Used when .env / the environment did not supply one. Nothing here
+        writes the key to disk, and the response echoes only the mask.
+        """
+        key = (body.api_key or "").strip()
+        if not key:
+            raise HTTPException(400, "api_key 不能是空的")
+        credential.set(key)
+        return {"key_configured": True, "key_masked": credential.masked}
+
+    @app.post("/api/episodes/{episode_id}/motion/generate")
+    def generate_motion(episode_id: int, body: GenerateMotionRequest) -> dict[str, Any]:
+        """Tab 2's "generate both clips" action.
+
+        Replaces the automatic fan-out that used to happen on keyframe
+        approval, so the reviewer chooses the backend, model and
+        resolution -- and sees the estimated cost -- before anything is
+        spent. Both roles are always generated together and pinned to the
+        same model and resolution: the loop builder stream-copies its
+        inputs, so a sleep clip and a lookup clip with different specs
+        cannot be concatenated (see stages.py's _build_loop_variant).
+        """
+        episode = db.episode(episode_id)
+        if episode is None:
+            raise HTTPException(404, "episode not found")
+        if not any(
+            a["kind"] == "keyframe" and a["status"] == "approved"
+            for a in db.assets_for_episode(episode_id)
+        ):
+            raise HTTPException(
+                409, "還沒有已核准的關鍵幀——請先在頁籤 1 選定一張"
+            )
+        motion_task_types = {"generate_motion_test", "start_veo_motion", "poll_veo_motion"}
+        if any(
+            t["task_type"] in motion_task_types and t["status"] in ("queued", "running")
+            for t in db.tasks_for_episode(episode_id)
+        ):
+            raise HTTPException(
+                409,
+                "這一集已經有動作生成任務在排隊或執行中——請等它完成，"
+                "或按「終止」後再試",
+            )
+        if any(
+            a["kind"] == "motion_test" and a["status"] == "approved"
+            for a in db.assets_for_episode(episode_id)
+        ):
+            # Same reasoning as tab 1's post-approval guard: regenerating
+            # the whole pair after one role is approved would leave an
+            # approved asset beside a fresh awaiting_review batch. Single-
+            # role retries go through that asset's own reject action.
+            raise HTTPException(
+                409,
+                "這一集已經有核准的動作片段——若只想重做其中一支，"
+                "請用該片段自己的「退回重生成」",
+            )
+
+        payload_by_role: dict[str, dict[str, Any]] = {}
+        if body.provider == "veo":
+            section = veo_support.veo_section(config)
+            entry, resolution = _veo_preflight(
+                episode_id, body.model, body.resolution,
+                default_resolution=section.get("default_resolution") or "720p",
+            )
+            per_clip = veo_support.estimate_cost_usd(entry, clips=1)
+            for role in ("sleep", "lookup"):
+                payload_by_role[role] = veo_support.payload_for_start(
+                    role=role, model_id=entry["id"],
+                    resolution=resolution, estimated_usd=per_clip,
+                )
+            task_type = "start_veo_motion"
+        elif body.provider == "comfyui":
+            task_type = "generate_motion_test"
+            payload_by_role = {role: {"role": role} for role in ("sleep", "lookup")}
+        else:
+            raise HTTPException(
+                400, f"未知的生成來源 {body.provider!r}；只支援 'veo' 或 'comfyui'"
+            )
+
+        # Supersede whatever is still pending before enqueuing a fresh
+        # pair, the same way tab 1's regenerate does, so the UI never
+        # shows two live attempts for one role side by side.
+        task_ids = {}
+        for role in ("sleep", "lookup"):
+            db.supersede_assets(episode_id, "motion_test", role)
+            custom_prompt = body.sleep_prompt if role == "sleep" else body.lookup_prompt
+            source_prompt = custom_prompt.strip() if custom_prompt and custom_prompt.strip() else None
+            asset_id = db.create_asset(
+                episode_id, "motion_test", role,
+                variant_index=db.next_variant_index(episode_id, "motion_test", role),
+                source_prompt=source_prompt,
+            )
+            payload = dict(payload_by_role[role])
+            if source_prompt:
+                payload["prompt"] = source_prompt
+            task_ids[role] = db.enqueue_task(
+                episode_id, task_type, asset_id=asset_id, payload=payload
+            )
+        if episode["status"] == "draft":
+            db.update_episode_status(episode_id, "in_progress")
+        return {"provider": body.provider, "task_ids": task_ids}
+
+    @app.get("/api/motion/defaults")
+    def motion_defaults(episode_id: int | None = None) -> dict[str, Any]:
+        """Return the default motion prompts and dynamic environmental presets for Tab 2.
+
+        帶 episode_id 時會優先回傳「這一集的關鍵幀實際用的那個場景」配套的
+        動作提示詞。少了這一步，人在頁籤 1 用晶片挑了湖畔露台，頁籤 2 仍會
+        預填室內地板的文字，等於餵給 FLF2V/Veo 一張與文字互相矛盾的起始幀。
+        """
+        motion = default_motion_prompts(config)
+        if episode_id is not None:
+            motion = _episode_motion_prompts(episode_id, fallback=motion)
+        return {
+            "sleep_prompt": motion["sleep"],
+            "lookup_prompt": motion["lookup"],
+            "presets": {
+                "nature_breeze": {
+                    "label": "大自然微風與湖光 (Nature Breeze & Lake)",
+                    "description": "微風吹拂綠樹枝葉、湖面微波漣漪、天邊鳥群滑翔",
+                    "clause": "Outside the large window, a gentle mountain breeze softly sways the tree foliage and lush greenery in a calm, rhythmic motion; subtle ripples shimmer softly across the calm lake water; a few distant birds glide peacefully across the sky; warm sunlight dapples gently across the room.",
+                },
+                "rainy_window": {
+                    "label": "窗外細雨 (Rainy Window)",
+                    "description": "細雨水珠在玻璃窗上緩慢滑落、戶外濕潤綠葉微擺",
+                    "clause": "Outside the glass window, gentle raindrops trickle down the glass pane in a slow rhythmic motion; wet tree leaves sway gently in the cool breeze; subtle ripples form on outdoor puddles; warm interior reflections glow softly against the misty window.",
+                },
+                "urban_sunset": {
+                    "label": "城市街景晚霞 (Urban Sunset & Bokeh)",
+                    "description": "街邊樹蔭輕擺、遠方車流虛焦光斑微弱呼吸",
+                    "clause": "Through the picture window, distant street tree canopies sway subtly; blurred bokeh lights of distant city traffic twinkle and breathe softly in the background; calm urban atmospheric haze shifts gently under the warm sunset sky.",
+                },
+                "forest_woods": {
+                    "label": "林間微風 (Forest Woods)",
+                    "description": "針葉樹梢輕晃、林間光柱微移、微塵光斑",
+                    "clause": "Beyond the panoramic window, tall pine trees and forest canopy sway with a steady, natural oscillation; soft light beams through the trees shift gently; subtle dust motes float peacefully in the warm sunbeams.",
+                },
+            },
+        }
+
+    @app.post("/api/episodes/{episode_id}/motion/suggest-prompts")
+    def suggest_motion_prompts(episode_id: int) -> dict[str, Any]:
+        """Analyze the episode's approved keyframe image and/or prompt to
+        dynamically synthesize environmental motion prompts tailored to the scene."""
+        episode = db.episode(episode_id)
+        if episode is None:
+            raise HTTPException(404, "episode not found")
+        approved_keyframes = [
+            a for a in db.assets_for_episode(episode_id, kind="keyframe", role="shared")
+            if a["status"] == "approved"
+        ]
+        if not approved_keyframes:
+            raise HTTPException(409, "尚未有已核准的關鍵幀——請先在頁籤 1 完成關鍵幀選定")
+
+        keyframe = approved_keyframes[-1]
+        kf_path = Path(keyframe["path"]) if keyframe["path"] else None
+        kf_prompt = (keyframe["source_prompt"] or "").lower()
+
+        # Try multimodal vision analysis via Gemini if key is configured
+        api_key = credential.get() or os.getenv("GEMINI_API_KEY")
+        vision_result = None
+        if api_key and kf_path and kf_path.is_file():
+            try:
+                from google import genai
+                from PIL import Image as PILImage
+                client = genai.Client(api_key=api_key)
+                with PILImage.open(kf_path) as pil_img:
+                    vision_prompt = (
+                        "Analyze this cafe interior image, focusing on the window view (nature, lake, mountains, trees, rain, or city). "
+                        "Determine what natural, physically plausible ambient motions (such as trees swaying in gentle breeze, water ripples, bird flight, raindrops, light shifts) "
+                        "should occur to make this a living, breathing scene in an 8-second seamless loop. "
+                        "Return ONLY a JSON object with this structure: "
+                        '{"scene_summary": "<brief scene description>", "environmental_motion": "<concise English description of ambient motions that loop seamlessly>"}'
+                    )
+                    resp = client.models.generate_content(
+                        model="gemini-2.0-flash",
+                        contents=[pil_img, vision_prompt],
+                    )
+                    text = (resp.text or "").strip()
+                    text = text.removeprefix("```json").removesuffix("```").strip()
+                    parsed = json.loads(text)
+                    env_motion = parsed.get("environmental_motion", "").strip()
+                    if env_motion:
+                        vision_result = {
+                            "scene_detected": parsed.get("scene_summary", "AI 視覺辨識環境"),
+                            "env_motion": env_motion,
+                            "source": "gemini-vision",
+                        }
+            except (ImportError, OSError, ValueError, RuntimeError) as exc:
+                logger.debug("Vision prompt analysis fallback to heuristic: %s", exc)
+
+        if vision_result is None:
+            # Heuristic detection based on keyframe prompt keywords
+            if any(w in kf_prompt for w in ("rain", "raindrop", "storm", "wet")):
+                scene_detected = "細雨咖啡館 (Rainy Cafe)"
+                env_motion = (
+                    "Outside the glass window, gentle raindrops trickle down the glass pane in a slow rhythmic motion; "
+                    "wet tree leaves sway gently in the cool breeze; subtle ripples form on outdoor puddles; "
+                    "warm interior reflections glow softly against the misty window."
+                )
+            elif any(w in kf_prompt for w in ("city", "street", "urban", "skyline", "traffic")):
+                scene_detected = "城市街景與天際線 (City View)"
+                env_motion = (
+                    "Through the picture window, distant street tree canopies sway subtly; "
+                    "blurred bokeh lights of distant city traffic twinkle and breathe softly in the background; "
+                    "calm urban atmospheric haze shifts gently under the warm sunset sky."
+                )
+            elif any(w in kf_prompt for w in ("forest", "pines", "woods", "trees")):
+                scene_detected = "森林與林間微風 (Forest Woods)"
+                env_motion = (
+                    "Beyond the panoramic window, tall pine trees and forest canopy sway with a steady, natural oscillation; "
+                    "soft light beams through the trees shift gently; subtle dust motes float peacefully in the warm sunbeams."
+                )
+            else:
+                scene_detected = "自然湖泊與山景微風 (Nature Lake & Breeze)"
+                env_motion = (
+                    "Outside the large window, a gentle mountain breeze softly sways the tree foliage and natural greenery "
+                    "with a calm rhythmic motion; subtle ripples shimmer softly across the calm lake water; "
+                    "a few distant birds glide serenely across the sky and loop naturally; soft sunlight dapples gently across the room."
+                )
+            vision_result = {
+                "scene_detected": scene_detected,
+                "env_motion": env_motion,
+                "source": "heuristic",
+            }
+
+        env = vision_result["env_motion"]
+        sleep_prompt = (
+            f"A continuous seamless 8-second loop video based on the image. The fluffy chow chow dog remains lying flat on the cafe floor "
+            f"in the exact same pose throughout the clip, only its tail wags gently a few times and its chest and back rise and fall slowly with calm breathing, "
+            f"fur shifting subtly. Natural environmental dynamics: {env} Steam continues curling gently from the coffee mug on the table; warm daylight shifts almost imperceptibly. "
+            f"The owner stays completely out of frame throughout, only the chair, laptop, and mug are visible. "
+            f"The dog's head and body position and all environmental elements at the end of the clip match the very first frame seamlessly. "
+            f"No camera movement, no scene change, no new objects, smooth continuous loop returning to the same composition, photorealistic, physically plausible motion"
+        )
+        lookup_prompt = (
+            f"A continuous seamless 8-second loop video based on the image. The fluffy chow chow dog is lying flat on the cafe floor. "
+            f"Partway through the clip, the dog slowly lifts its head up from its front paws and turns to glance toward the empty chair and table where its owner would be sitting, "
+            f"holds the glance for a brief moment, then gently lowers its head back down onto its front paws and closes its eyes, returning to the exact same resting pose as the very first frame. "
+            f"Natural environmental dynamics: {env} Steam rises from the coffee mug; soft daylight shifting gently. "
+            f"The owner remains completely out of frame throughout, only the chair, laptop, and steaming mug are visible. "
+            f"No camera movement, no scene change, no new objects, smooth continuous loop where the end frame connects seamlessly back to the start frame, photorealistic, physically plausible motion"
+        )
+
+        return {
+            "scene_detected": vision_result["scene_detected"],
+            "source": vision_result["source"],
+            "sleep_prompt": sleep_prompt,
+            "lookup_prompt": lookup_prompt,
+        }
 
     @app.post("/api/episodes/{episode_id}/motion/assemble-preview")
     def assemble_motion_preview(episode_id: int) -> dict[str, Any]:
@@ -312,6 +762,114 @@ def create_app(db: StateDB, config: AppConfig, local_comfyui: ComfyUIClient) -> 
         task_id = db.enqueue_task(episode_id, "build_loop_preview", payload=payload)
         return {"task_id": task_id}
 
+    @app.post("/api/episodes/{episode_id}/clips/generate")
+    def generate_clips(episode_id: int, body: GenerateMotionRequest) -> dict[str, Any]:
+        """Stage 2 of the Veo flow: re-run both clips at full resolution.
+
+        The reviewer's chosen workflow is "generate cheap 720p tests
+        first, then re-run the keeper at 1080p". This is that second run.
+        It writes straight into `clip_1080p`, skipping both `clip` and
+        `upscale_clip` -- Veo produces 1080p natively, so the ComfyUI
+        upscale stage (tab 3) is not on this path at all.
+
+        Nothing new is needed downstream: _continue_after_approval's
+        existing clip_1080p fan-in already fires build_loop once both
+        roles are approved.
+        """
+        episode = db.episode(episode_id)
+        if episode is None:
+            raise HTTPException(404, "episode not found")
+        if body.provider != "veo":
+            raise HTTPException(
+                400,
+                f"這個端點只支援 Veo（收到 {body.provider!r}）——"
+                "本機 ComfyUI 的正式片段走既有的 generate_clip/upscale_clip 流程",
+            )
+        assets = db.assets_for_episode(episode_id)
+        approved_motion = {
+            a["role"] for a in assets
+            if a["kind"] == "motion_test" and a["status"] == "approved"
+        }
+        if {"sleep", "lookup"} - approved_motion:
+            raise HTTPException(
+                409,
+                "需要 sleep 與 lookup 兩支低解析度測試都核准後，"
+                "才能重跑 1080p 正式版",
+            )
+        if any(
+            a["kind"] == "clip_1080p" and a["status"] in ("queued", "running", "awaiting_review", "approved")
+            for a in assets
+        ):
+            raise HTTPException(
+                409,
+                "這一集已經有 1080p 正式片段（或正在生成中）——"
+                "若要重做其中一支，請用該片段自己的「退回重生成」",
+            )
+        live_types = {"start_veo_clip", "poll_veo_clip", "generate_clip", "upscale_clip"}
+        if any(
+            t["task_type"] in live_types and t["status"] in ("queued", "running")
+            for t in db.tasks_for_episode(episode_id)
+        ):
+            raise HTTPException(
+                409, "這一集已經有正式片段的生成任務在排隊或執行中"
+            )
+
+        entry, resolution = _veo_preflight(
+            episode_id, body.model, body.resolution, default_resolution="1080p"
+        )
+        per_clip = veo_support.estimate_cost_usd(entry, clips=1)
+        task_ids = {}
+        for role in ("sleep", "lookup"):
+            # Carry the approved test's prompt across so the 1080p run
+            # reproduces what the reviewer actually signed off on, not
+            # the generic default.
+            approved = [
+                a for a in db.assets_for_episode(episode_id, kind="motion_test", role=role)
+                if a["status"] == "approved"
+            ][-1]
+            asset_id = db.create_asset(
+                episode_id, "clip_1080p", role,
+                variant_index=db.next_variant_index(episode_id, "clip_1080p", role),
+                source_prompt=approved["source_prompt"],
+            )
+            task_ids[role] = db.enqueue_task(
+                episode_id, "start_veo_clip", asset_id=asset_id,
+                payload=veo_support.payload_for_start(
+                    role=role, model_id=entry["id"],
+                    resolution=resolution, estimated_usd=per_clip,
+                ),
+            )
+        return {
+            "provider": "veo",
+            "resolution": resolution,
+            "estimated_cost_usd": round(per_clip * 2, 4),
+            "task_ids": task_ids,
+        }
+
+    @app.post("/api/episodes/{episode_id}/clips/cancel")
+    def cancel_clip_generation(episode_id: int) -> dict[str, Any]:
+        """Stop the 1080p run. Same honesty rule as motion/cancel: a
+        started Veo operation is already billed and cannot be called
+        off, so the count of abandoned paid operations is reported
+        rather than implying a refund."""
+        if db.episode(episode_id) is None:
+            raise HTTPException(404, "episode not found")
+        live = [
+            t for t in db.tasks_for_episode(episode_id)
+            if t["status"] in ("queued", "running")
+        ]
+        abandoned = [
+            t for t in live
+            if t["task_type"] in ("start_veo_clip", "poll_veo_clip")
+            and t["asset_id"] is not None
+            and (db.asset(t["asset_id"]) or {})["operation_id"]
+        ]
+        cancelled = db.cancel_tasks(
+            episode_id, {"start_veo_clip", "poll_veo_clip"},
+            error="使用者手動終止生成",
+        )
+        return {"cancelled": cancelled, "abandoned_paid_operations": len(abandoned)}
+
     @app.post("/api/episodes/{episode_id}/motion/cancel")
     def cancel_motion_generation(episode_id: int) -> dict[str, Any]:
         """Tab 2's "Stop" button -- same reasoning as cancel_keyframe_
@@ -329,11 +887,32 @@ def create_app(db: StateDB, config: AppConfig, local_comfyui: ComfyUIClient) -> 
         """
         if db.episode(episode_id) is None:
             raise HTTPException(404, "episode not found")
-        local_comfyui.interrupt()
+        tasks = db.tasks_for_episode(episode_id)
+        live = [t for t in tasks if t["status"] in ("queued", "running")]
+        # Only meaningful for the local backend. There is no way to
+        # interrupt a Veo generation: once start_video returned an
+        # operation name the request is already billed, so cancelling
+        # here stops us collecting the result -- it does not stop the
+        # charge, and must not claim to.
+        if any(t["task_type"] == "generate_motion_test" for t in live):
+            local_comfyui.interrupt()
+        abandoned_paid = [
+            t["asset_id"] for t in live
+            if t["task_type"] in ("start_veo_motion", "poll_veo_motion")
+            and t["asset_id"] is not None
+            and (db.asset(t["asset_id"]) or {})["operation_id"]
+        ]
         cancelled = db.cancel_tasks(
-            episode_id, {"generate_motion_test"}, error="使用者手動終止生成"
+            episode_id,
+            {"generate_motion_test", "start_veo_motion", "poll_veo_motion"},
+            error="使用者手動終止生成",
         )
-        return {"cancelled": cancelled}
+        return {
+            "cancelled": cancelled,
+            # Surfaced so the UI can say "已停止收取結果，但這些已經計費"
+            # instead of implying the spend was called off.
+            "abandoned_paid_operations": len(abandoned_paid),
+        }
 
     @app.get("/api/episodes/{episode_id}")
     def get_episode(episode_id: int) -> dict[str, Any]:
@@ -424,9 +1003,31 @@ def create_app(db: StateDB, config: AppConfig, local_comfyui: ComfyUIClient) -> 
             variant_index=asset["variant_index"] + 1,
             source_prompt=body.new_prompt if body.new_prompt is not None else asset["source_prompt"],
         )
-        db.enqueue_task(
-            episode_id, _TASK_TYPE_BY_KIND[asset["kind"]], asset_id=replacement_id
-        )
+        # A Veo-produced asset has to be retried through the Veo start
+        # task, not the local ComfyUI one -- _TASK_TYPE_BY_KIND only
+        # knows about the original local pipeline. Model and resolution
+        # are carried over from the rejected asset so the replacement
+        # stays concat-compatible with its sibling role.
+        _VEO_RETRY_TASK_TYPE = {
+            "motion_test": "start_veo_motion",
+            "clip_1080p": "start_veo_clip",
+        }
+        if asset["provider"] == "google-veo" and asset["kind"] in _VEO_RETRY_TASK_TYPE:
+            db.enqueue_task(
+                episode_id, _VEO_RETRY_TASK_TYPE[asset["kind"]], asset_id=replacement_id,
+                payload=veo_support.payload_for_start(
+                    role=asset["role"],
+                    model_id=asset["model"],
+                    resolution=(
+                        "1080p" if (asset["height"] or 0) >= 1080 else "720p"
+                    ),
+                    estimated_usd=asset["estimated_cost_usd"] or 0.0,
+                ),
+            )
+        else:
+            db.enqueue_task(
+                episode_id, _TASK_TYPE_BY_KIND[asset["kind"]], asset_id=replacement_id
+            )
         return {
             "rejected": dict(db.asset(asset_id)),
             "requeued": dict(db.asset(replacement_id)),
