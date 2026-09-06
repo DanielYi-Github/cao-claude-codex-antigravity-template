@@ -212,14 +212,14 @@ def test_motion_prompts_follow_the_same_scene_and_pose(composer):
     for prompt in scene.motion_prompts.values():
         assert "worn stone terrace" in prompt
         assert "plank floor" not in prompt
-        assert "The last frame matches the first exactly." in prompt
+        assert "match the very first frame seamlessly" in prompt
     assert "stays sitting" in scene.motion_prompts["sleep"]
     assert "turns its head" in scene.motion_prompts["lookup"]
 
 
 def test_motion_ambient_motion_matches_the_weather(composer):
     rain = composer.compose({"weather": "rain", "season": "autumn"})
-    assert "rain keeps running down the glass" in rain.motion_prompts["sleep"]
+    assert "rain keeps falling in a steady curtain" in rain.motion_prompts["sleep"]
     snow = composer.compose({"weather": "snow", "season": "winter"})
     assert "snow keeps falling" in snow.motion_prompts["sleep"]
 
@@ -268,3 +268,67 @@ def _valid(composer: SceneComposer, selection: dict[str, str]) -> bool:
     except SceneSelectionError:
         return False
     return True
+
+
+def test_motion_prompts_never_contradict_the_scene(composer):
+    """把全部合法組合掃一遍，而不是抽樣。
+
+    這是針對 824eb3b 那五個按鈕的回歸測試：它們寫死了姿勢、地面、開口
+    形式與光線，而這裡要保證的是動作提示詞永遠只講畫面裡真的成立的東西
+    （artifacts/spec.md「動作提示詞與關鍵幀場景的接縫」驗收 2、3、5）。
+    """
+    axes = {a["id"]: [o["id"] for o in a["options"]] for a in composer.axes()}
+    checked = 0
+    for aspect in axes["aspect"]:
+        for time_id in axes["time"]:
+            for weather in axes["weather"]:
+                for pose in axes["pose"]:
+                    for venue in axes["venue"]:
+                        selection = {
+                            "aspect": aspect, "time": time_id, "weather": weather,
+                            "pose": pose, "venue": venue,
+                            # snow ⇄ winter 規則，避免掃到不合法組合
+                            "season": "winter" if weather == "snow" else "autumn",
+                        }
+                        prompts = composer.compose_motion(selection)
+                        after_dark = time_id in ("blue_hour", "night")
+                        for text in prompts.values():
+                            lowered = text.lower()
+                            # 全戶外座位沒有玻璃可看穿
+                            if aspect == "outdoor_seat":
+                                assert "window" not in lowered
+                                assert "beyond the glass" not in lowered
+                            # 入夜不得出現日光
+                            if after_dark:
+                                assert "daylight" not in lowered
+                                assert "sunlight" not in lowered
+                                assert "sunbeam" not in lowered
+                            # 單向飛越畫面的東西無法回到第一幀
+                            assert "bird" not in lowered
+                            # 姿勢與地面必須來自這一組選擇
+                            assert composer._option("aspect", aspect)["surface"] in text
+                        checked += 1
+    assert checked == 3 * 7 * 6 * 3 * 10
+
+
+# MOTION_NEGATIVE_PROMPT 只在 Veo 那條路真的生效（WAN 的 KSamplerAdvanced 是
+# cfg=1，同樣無效）。既然它會生效，就不能跟正向提示詞打架——我一度在負向
+# 裡寫了 "passing vehicles"，而 urban_sunset 主題與 paris_street 場地都正面
+# 描述遠方車流的散景。這是這次稽核在修的同一類錯誤，所以用測試釘住。
+_ONE_WAY_MOTION_NOUNS = ("bird", "vehicle", "person", "human", "crowd")
+
+
+def test_negative_prompt_does_not_contradict_any_positive(composer):
+    from lyria_auto.studio.app import MOTION_THEMES
+    from lyria_auto.studio.stages import MOTION_NEGATIVE_PROMPT
+
+    axes = {a["id"]: [o["id"] for o in a["options"]] for a in composer.axes()}
+    positives: list[str] = [theme["clause"] for theme in MOTION_THEMES.values()]
+    for venue in axes["venue"]:
+        positives.extend(composer.compose_motion({"venue": venue}).values())
+
+    for noun in _ONE_WAY_MOTION_NOUNS:
+        # 負向有寫的東西，正向就不能同時在講
+        if noun in MOTION_NEGATIVE_PROMPT:
+            for text in positives:
+                assert noun not in text.lower(), f"{noun!r} 同時出現在正向與負向"

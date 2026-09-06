@@ -53,6 +53,8 @@ function _setScene(ctx, scene) {
 }
 
 async function _fetchPresetsOnce(ctx) {
+  // 失敗不會被記進 _cachedPresets（await 直接丟出），所以伺服器重啟後
+  // 下一次輪詢就會自己好起來，不必整頁重載。
   if (!_cachedPresets) {
     _cachedPresets = await ctx.api('/api/keyframes/scene-presets');
   }
@@ -94,10 +96,29 @@ async function _renderScenePresets(ctx, { disabled }) {
   try {
     presets = await _fetchPresetsOnce(ctx);
   } catch {
-    // 非關鍵：拿不到就退回純文字編輯，跟這個功能出現之前一樣。
+    // 退回純文字編輯（跟這個功能出現之前一樣），但要**講出來**。
+    // 原本這裡是靜默清空：晶片整排消失，畫面上沒有任何線索，人只會以為
+    // 功能沒做。實際遇到的情形是伺服器行程比程式碼舊——靜態檔（HTML/JS）
+    // 每次請求都從磁碟讀，所以新版介面看得到，但路由還是舊行程載入的那份，
+    // /api/keyframes/scene-presets 回 404。
     host.innerHTML = '';
+    const notice = $('#sceneNotice');
+    if (notice) {
+      notice.textContent = '⚠️ 讀不到場景預設選項（/api/keyframes/scene-presets）。'
+        + '最常見的原因是伺服器行程比程式碼舊——重新啟動 lyria-auto studio 後再重新整理。'
+        + '在那之前仍可直接編輯下面的提示詞文字。';
+      notice.classList.add('warn');
+    }
     return;
   }
+  // 走到這裡代表預設選項讀得到了——把上面那段「讀不到」的警告清掉，
+  // 否則伺服器重啟後訊息會留在畫面上，變成另一種誤導。
+  const notice = $('#sceneNotice');
+  if (notice && notice.classList.contains('warn')) {
+    notice.textContent = '';
+    notice.classList.remove('warn');
+  }
+
   let scene = _currentScene(ctx);
   if (!scene) {
     scene = { ...presets.defaults };

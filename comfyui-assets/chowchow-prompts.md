@@ -47,6 +47,21 @@ One chow chow dog, chowchow_mascot: dense cinnamon-red fur, thick mane, black no
 的實際輸出，貼在這裡供人閱讀與比對，**不要在這裡手動改措辭**——要改請改
 `config/scene_presets.yaml`，那裡有測試把關。
 
+### 為什麼動作提示詞比關鍵幀長（2026-09-06 修訂）
+
+256 token 的上限是 FLUX.1-schnell 的訓練長度，只約束**關鍵幀**。Veo 與
+WAN 的 umT5 都沒有這個限制，Veo 還會真的遵守 `negative_prompt`，所以動作
+提示詞刻意寫得比關鍵幀長、講得比關鍵幀細——把影像端的預算硬套到影片端
+只是白白丟掉可用的描述。
+
+但長不等於可以寫死。頁籤 2 的四個環境主題按鈕只覆寫**環境動態**那一段；
+姿勢、地面材質、開口形式（有窗／半開放／全戶外）、白天或夜晚的光線，
+一律由頁籤 1 的晶片選擇推導。這一條有全組合掃描的測試把關
+（`tests/test_scene_composer.py::test_motion_prompts_never_contradict_the_scene`）：
+全戶外座位的動作提示詞不得出現 window，入夜不得出現 daylight／sunlight，
+任何組合都不得出現會單向飛越畫面的鳥——牠回不到第一幀，而 64 秒巨集循環
+與 `studio/veo.py` 的 seam_score 都建立在「最後一幀等於第一幀」上。
+
 ### 為什麼整份重寫
 
 舊版這份文件的提示詞實測是 **861 個 T5 token**，而 FLUX.1-schnell 的訓練
@@ -104,13 +119,13 @@ One chow chow dog, chowchow_mascot: dense cinnamon-red fur, thick mane, black no
 Motion 1（睡覺／維持姿勢）：
 
 ```text
-A seamless 8-second loop from this image. The chow chow on the wide plank floor stays lying in the exact same pose, only its tail sweeps slowly and its ribs rise and fall with calm breathing. Everything else holds still: steam keeps curling from the mug and a leaf outside shifts slightly. The last frame matches the first exactly. Locked-off camera, no scene change, no new objects, photorealistic, physically plausible motion.
+A continuous seamless 8-second loop video based on the image. The fluffy chow chow dog on the wide plank floor stays lying in the exact same pose, only its tail sweeps slowly and its ribs rise and fall with calm breathing. Natural environmental dynamics: Beyond the glass, the conifer branches sway with a slow steady oscillation and the moss below stays still; a leaf outside shifts slightly. Steam continues curling gently from the mug on the table; the daylight shifts almost imperceptibly. The owner stays completely out of frame throughout, only the chair, laptop, and mug are visible. The dog and every environmental element at the end of the clip match the very first frame seamlessly. No camera movement, no scene change, no new objects, smooth continuous loop returning to the same composition, photorealistic, physically plausible motion.
 ```
 
 Motion 2（抬頭看一眼，8 段裡只播 1 次）：
 
 ```text
-A seamless 8-second loop from this image. The chow chow on the wide plank floor lifts its head from its paws, glances once toward the empty chair, then lowers its head back onto its paws exactly as it began. Everything else holds still: steam keeps curling from the mug and a leaf outside shifts slightly. The last frame matches the first exactly. Locked-off camera, no scene change, no new objects, photorealistic, physically plausible motion.
+A continuous seamless 8-second loop video based on the image. The fluffy chow chow dog on the wide plank floor lifts its head from its paws, glances once toward the empty chair, then lowers its head back onto its paws exactly as it began. Natural environmental dynamics: Beyond the glass, the conifer branches sway with a slow steady oscillation and the moss below stays still; a leaf outside shifts slightly. Steam continues curling gently from the mug on the table; the daylight shifts almost imperceptibly. The owner stays completely out of frame throughout, only the chair, laptop, and mug are visible. The dog and every environmental element at the end of the clip match the very first frame seamlessly. No camera movement, no scene change, no new objects, smooth continuous loop returning to the same composition, photorealistic, physically plausible motion.
 ```
 
 ### 湖畔・半開放露台・夏・晴・黃金時刻・坐著看主人・24mm
@@ -124,13 +139,13 @@ One chow chow dog, chowchow_mascot: dense cinnamon-red fur, thick mane, black no
 Motion 1（睡覺／維持姿勢）：
 
 ```text
-A seamless 8-second loop from this image. The chow chow on the plank floor at the open threshold stays sitting in the exact same pose, only its tail sweeps slowly behind it and its chest rises and falls with calm breathing. Everything else holds still: steam keeps curling from the mug and dust drifts in the sunlight. The last frame matches the first exactly. Locked-off camera, no scene change, no new objects, photorealistic, physically plausible motion.
+A continuous seamless 8-second loop video based on the image. The fluffy chow chow dog on the plank floor at the open threshold stays sitting in the exact same pose, only its tail sweeps slowly behind it and its chest rises and falls with calm breathing. Natural environmental dynamics: Past the folded-open wall, the lake surface shimmers with slow ripples and the far ridgeline holds perfectly still; dust drifts slowly through the sunbeam. Steam continues curling gently from the mug on the table; the daylight shifts almost imperceptibly. The owner stays completely out of frame throughout, only the chair, laptop, and mug are visible. The dog and every environmental element at the end of the clip match the very first frame seamlessly. No camera movement, no scene change, no new objects, smooth continuous loop returning to the same composition, photorealistic, physically plausible motion.
 ```
 
 Motion 2（抬頭看一眼，8 段裡只播 1 次）：
 
 ```text
-A seamless 8-second loop from this image. The chow chow on the plank floor at the open threshold turns its head slowly toward the view outside, holds the look briefly, then turns back to the empty chair exactly as it began. Everything else holds still: steam keeps curling from the mug and dust drifts in the sunlight. The last frame matches the first exactly. Locked-off camera, no scene change, no new objects, photorealistic, physically plausible motion.
+A continuous seamless 8-second loop video based on the image. The fluffy chow chow dog on the plank floor at the open threshold turns its head slowly toward the view outside, holds the look briefly, then turns back to the empty chair exactly as it began. Natural environmental dynamics: Past the folded-open wall, the lake surface shimmers with slow ripples and the far ridgeline holds perfectly still; dust drifts slowly through the sunbeam. Steam continues curling gently from the mug on the table; the daylight shifts almost imperceptibly. The owner stays completely out of frame throughout, only the chair, laptop, and mug are visible. The dog and every environmental element at the end of the clip match the very first frame seamlessly. No camera movement, no scene change, no new objects, smooth continuous loop returning to the same composition, photorealistic, physically plausible motion.
 ```
 
 ### 日式緣側・全戶外座位・春・薄雲・上午・蜷成一團・50mm
@@ -144,13 +159,13 @@ One chow chow dog, chowchow_mascot: dense cinnamon-red fur, thick mane, black no
 Motion 1（睡覺／維持姿勢）：
 
 ```text
-A seamless 8-second loop from this image. The chow chow on the worn stone terrace stays curled in the exact same pose, only its flank rises and falls with slow breathing and its fur shifts slightly. Everything else holds still: steam keeps curling from the mug and a leaf outside shifts slightly. The last frame matches the first exactly. Locked-off camera, no scene change, no new objects, photorealistic, physically plausible motion.
+A continuous seamless 8-second loop video based on the image. The fluffy chow chow dog on the worn stone terrace stays curled in the exact same pose, only its flank rises and falls with slow breathing and its fur shifts slightly. Natural environmental dynamics: Around the open terrace, the maple leaves stir gently and the moss garden below holds completely still; a leaf outside shifts slightly. Steam continues curling gently from the mug on the table; the daylight shifts almost imperceptibly. The owner stays completely out of frame throughout, only the chair, laptop, and mug are visible. The dog and every environmental element at the end of the clip match the very first frame seamlessly. No camera movement, no scene change, no new objects, smooth continuous loop returning to the same composition, photorealistic, physically plausible motion.
 ```
 
 Motion 2（抬頭看一眼，8 段裡只播 1 次）：
 
 ```text
-A seamless 8-second loop from this image. The chow chow on the worn stone terrace raises its head briefly, opens its eyes toward the empty chair, then tucks its nose back into its fur exactly as it began. Everything else holds still: steam keeps curling from the mug and a leaf outside shifts slightly. The last frame matches the first exactly. Locked-off camera, no scene change, no new objects, photorealistic, physically plausible motion.
+A continuous seamless 8-second loop video based on the image. The fluffy chow chow dog on the worn stone terrace raises its head briefly, opens its eyes toward the empty chair, then tucks its nose back into its fur exactly as it began. Natural environmental dynamics: Around the open terrace, the maple leaves stir gently and the moss garden below holds completely still; a leaf outside shifts slightly. Steam continues curling gently from the mug on the table; the daylight shifts almost imperceptibly. The owner stays completely out of frame throughout, only the chair, laptop, and mug are visible. The dog and every environmental element at the end of the clip match the very first frame seamlessly. No camera movement, no scene change, no new objects, smooth continuous loop returning to the same composition, photorealistic, physically plausible motion.
 ```
 
 ### 巴黎街角・落地窗內側・冬・雪・藍調時刻・趴睡・35mm
@@ -166,13 +181,13 @@ One chow chow dog, chowchow_mascot: dense cinnamon-red fur, thick mane, black no
 Motion 1（睡覺／維持姿勢）：
 
 ```text
-A seamless 8-second loop from this image. The chow chow on the wide plank floor stays lying in the exact same pose, only its tail sweeps slowly and its ribs rise and fall with calm breathing. Everything else holds still: snow keeps falling slowly outside and steam curls from the mug. The last frame matches the first exactly. Locked-off camera, no scene change, no new objects, photorealistic, physically plausible motion.
+A continuous seamless 8-second loop video based on the image. The fluffy chow chow dog on the wide plank floor stays lying in the exact same pose, only its tail sweeps slowly and its ribs rise and fall with calm breathing. Natural environmental dynamics: Beyond the glass, the plane tree canopy stirs and distant traffic drifts softly out of focus; snow keeps falling slowly and evenly. Steam continues curling gently from the mug on the table; the lamplight holds steady. The owner stays completely out of frame throughout, only the chair, laptop, and mug are visible. The dog and every environmental element at the end of the clip match the very first frame seamlessly. No camera movement, no scene change, no new objects, smooth continuous loop returning to the same composition, photorealistic, physically plausible motion.
 ```
 
 Motion 2（抬頭看一眼，8 段裡只播 1 次）：
 
 ```text
-A seamless 8-second loop from this image. The chow chow on the wide plank floor lifts its head from its paws, glances once toward the empty chair, then lowers its head back onto its paws exactly as it began. Everything else holds still: snow keeps falling slowly outside and steam curls from the mug. The last frame matches the first exactly. Locked-off camera, no scene change, no new objects, photorealistic, physically plausible motion.
+A continuous seamless 8-second loop video based on the image. The fluffy chow chow dog on the wide plank floor lifts its head from its paws, glances once toward the empty chair, then lowers its head back onto its paws exactly as it began. Natural environmental dynamics: Beyond the glass, the plane tree canopy stirs and distant traffic drifts softly out of focus; snow keeps falling slowly and evenly. Steam continues curling gently from the mug on the table; the lamplight holds steady. The owner stays completely out of frame throughout, only the chair, laptop, and mug are visible. The dog and every environmental element at the end of the clip match the very first frame seamlessly. No camera movement, no scene change, no new objects, smooth continuous loop returning to the same composition, photorealistic, physically plausible motion.
 ```
 
 ## 新增場景時的原則

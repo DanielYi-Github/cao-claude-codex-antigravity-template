@@ -115,35 +115,52 @@ function toggleVeoOnlyFields(ctx) {
 // 動作文字），共用一份快取會把上一集的場景帶到下一集。
 const _cachedMotionDefaults = new Map();
 
+// 目前核准的是哪一張關鍵幀。快取鍵要帶上它，不能只用 episode id：頁籤 2
+// 在還沒有關鍵幀時就會渲染一次（此時後端只能回全域預設），只用 episode id
+// 當鍵的話那一份預設會一直被沿用——人後來在頁籤 1 挑了湖畔戶外露台、核准、
+// 再回到頁籤 2，四個按鈕仍會餵給 Veo 森林木屋的室內木地板文字，正是這次要
+// 修的東西。關鍵幀換了就換鍵，快取自然失效。
+let _approvedKeyframeId = null;
+
+// 我們上一次自動填進兩個欄位的字。用來分辨「使用者沒動過」與「使用者改過」，
+// 只有前者可以被新的推導結果覆寫。
+const _prefilled = {};
+
 async function fetchMotionDefaults(ctx) {
   const episodeId = ctx.getEpisodeId();
-  const key = episodeId ?? 'global';
+  const key = `${episodeId ?? 'global'}|${_approvedKeyframeId ?? 'none'}`;
   if (_cachedMotionDefaults.has(key)) return _cachedMotionDefaults.get(key);
   let defaults;
   try {
     const query = episodeId ? `?episode_id=${episodeId}` : '';
     defaults = await ctx.api(`/api/motion/defaults${query}`);
   } catch {
-    defaults = { sleep_prompt: '', lookup_prompt: '', presets: {} };
+    // 同 tab1：拿不到就退回手動編輯，但四個環境主題按鈕會變成按了沒反應，
+    // 所以要講出來而不是靜默降級。
+    defaults = { sleep_prompt: '', lookup_prompt: '', presets: {}, unavailable: true };
   }
-  _cachedMotionDefaults.set(key, defaults);
+  // 失敗的結果不進快取——否則重啟伺服器後，這一頁會一直拿著那份失敗結果，
+  // 直到使用者整頁重載為止。
+  if (!defaults.unavailable) _cachedMotionDefaults.set(key, defaults);
   return defaults;
 }
 
-function applyEnvironmentalClause(ctx, clause, presetLabel) {
+// 套用一個環境主題。模板已經不在前端了——後端會依這一集的晶片選擇把
+// 姿勢、地面、開口形式、光線填好再回傳，前端只負責放進 textarea。
+// 這裡原本各自寫死一份 sleep/lookup 長模板，無論頁籤 1 選了什麼都宣稱狗
+// 趴平在室內咖啡館地板、外面有溫暖陽光（artifacts/spec.md「動作提示詞與
+// 關鍵幀場景的接縫」A、C、D、E）。
+function applyEnvironmentalClause(ctx, preset) {
   const { $ } = ctx;
   const sleepPromptEl = $('#sleepPrompt');
   const lookupPromptEl = $('#lookupPrompt');
   const statusEl = $('#motionStatus');
   if (!sleepPromptEl || !lookupPromptEl) return;
+  if (!preset.sleep_prompt || !preset.lookup_prompt) return;
 
-  const baseSleep = `A continuous seamless 8-second loop video based on the image. The fluffy chow chow dog remains lying flat on the cafe floor in the exact same pose throughout the clip, only its tail wags gently a few times and its chest and back rise and fall slowly with calm breathing, fur shifting subtly. Natural environmental dynamics outside and inside: ${clause} Steam continues curling gently from the coffee mug on the table; warm daylight shifts almost imperceptibly. The owner stays completely out of frame throughout, only the chair, laptop, and mug are visible. The dog's head and body position and all environmental elements at the end of the clip match the very first frame seamlessly. No camera movement, no scene change, no new objects, smooth continuous loop returning to the same composition, photorealistic, physically plausible motion`;
-
-  const baseLookup = `A continuous seamless 8-second loop video based on the image. The fluffy chow chow dog is lying flat on the cafe floor. Partway through the clip, the dog slowly lifts its head up from its front paws and turns to glance toward the empty chair and table where its owner would be sitting, holds the glance for a brief moment, then gently lowers its head back down onto its front paws and closes its eyes, returning to the exact same resting pose as the very first frame. Natural environmental dynamics: ${clause} Steam rises from the coffee mug; soft daylight shifting gently. The owner remains completely out of frame throughout, only the chair, laptop, and steaming mug are visible. No camera movement, no scene change, no new objects, smooth continuous loop where the end frame connects seamlessly back to the start frame, photorealistic, physically plausible motion`;
-
-  sleepPromptEl.value = baseSleep;
-  lookupPromptEl.value = baseLookup;
-  if (statusEl) statusEl.textContent = `✓ 已套用「${presetLabel}」環境動態提示詞。`;
+  sleepPromptEl.value = preset.sleep_prompt;
+  lookupPromptEl.value = preset.lookup_prompt;
+  if (statusEl) statusEl.textContent = `✓ 已套用「${preset.label}」環境動態提示詞。`;
 }
 
 function ensureTabScaffold(ctx) {
@@ -201,6 +218,8 @@ function ensureTabScaffold(ctx) {
           <button type="button" class="btn btn-sm" id="suggestMotionPrompts" style="margin-left: auto;">🔍 從關鍵幀分析環境動態</button>
         </div>
 
+        <p id="sceneStaleNotice" class="field-hint warn" hidden></p>
+
         <div class="prompt-grid">
           <div class="form-group">
             <label for="sleepPrompt">睡眠動作提示詞 (Sleep Prompt，佔循環 7/8)</label>
@@ -240,6 +259,10 @@ export function renderMotionTab(data, ctx) {
   const tasks = data.tasks || [];
 
   const hasKeyframeApproved = assets.some(a => a.kind === 'keyframe' && a.status === 'approved');
+  const approvedKeyframes = assets.filter(a => a.kind === 'keyframe' && a.status === 'approved');
+  _approvedKeyframeId = approvedKeyframes.length
+    ? approvedKeyframes[approvedKeyframes.length - 1].id
+    : null;
   const motionAssets = assets.filter(a => a.kind === 'motion_test');
   const loopPreviewAssets = assets.filter(a => a.kind === 'loop_preview');
 
@@ -291,16 +314,37 @@ export function renderMotionTab(data, ctx) {
   if (activeLookup && activeLookup.source_prompt && !$('#lookupPrompt').value) {
     $('#lookupPrompt').value = activeLookup.source_prompt;
   }
-  if (!$('#sleepPrompt').value || !$('#lookupPrompt').value) {
-    fetchMotionDefaults(ctx).then(defaults => {
-      if (!$('#sleepPrompt').value && defaults.sleep_prompt) {
-        $('#sleepPrompt').value = defaults.sleep_prompt;
-      }
-      if (!$('#lookupPrompt').value && defaults.lookup_prompt) {
-        $('#lookupPrompt').value = defaults.lookup_prompt;
-      }
-    });
-  }
+  fetchMotionDefaults(ctx).then(defaults => {
+    // 只有「空的」或「還是我們上次填進去的那串、使用者沒動過」才覆寫。
+    // 少了後半條，在關鍵幀核准之前渲染過一次頁籤 2 的人會一直看著全域預設
+    // （森林木屋／室內木地板），因為欄位已經不是空的了——快取換鍵也救不了。
+    // 使用者自己改過的字則絕不覆蓋。
+    const fill = (sel, next) => {
+      const el = $(sel);
+      if (!el || !next) return;
+      if (el.value && el.value !== _prefilled[sel]) return;
+      el.value = next;
+      _prefilled[sel] = next;
+    };
+    fill('#sleepPrompt', defaults.sleep_prompt);
+    fill('#lookupPrompt', defaults.lookup_prompt);
+    // 動作提示詞是從頁籤 1 的晶片選擇推導的。如果那邊的提示詞被手動改過
+    // 而晶片沒動，推導出來的字可能與實際畫面不符，且不會有任何跡象——
+    // 所以講出來，而不是安靜地填進去。
+    const notice = $('#sceneStaleNotice');
+    if (notice && defaults.unavailable) {
+      notice.hidden = false;
+      notice.textContent = '⚠️ 讀不到動作提示詞預設（/api/motion/defaults）。'
+        + '最常見的原因是伺服器行程比程式碼舊——重新啟動 lyria-auto studio 後再重新整理。'
+        + '在那之前環境主題按鈕會沒有反應，請直接手動編輯下面的文字。';
+    } else if (notice) {
+      notice.hidden = !defaults.scene_stale;
+      notice.textContent = defaults.scene_stale
+        ? '⚠️ 頁籤 1 的關鍵幀提示詞被手動改過，但場景晶片沒有跟著改。'
+          + '下面的動作提示詞是依晶片推導的，請自行確認是否與實際畫面相符。'
+        : '';
+    }
+  });
 
   const sleepPromptEl = $('#sleepPrompt');
   const lookupPromptEl = $('#lookupPrompt');
@@ -590,7 +634,7 @@ export function bindMotionTab(ctx) {
       const defaults = await fetchMotionDefaults(ctx);
       const preset = defaults?.presets?.[key];
       if (preset) {
-        applyEnvironmentalClause(ctx, preset.clause, preset.label);
+        applyEnvironmentalClause(ctx, preset);
       }
     };
   });

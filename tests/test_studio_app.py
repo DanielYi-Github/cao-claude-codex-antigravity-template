@@ -983,3 +983,160 @@ def test_motion_defaults_falls_back_for_episodes_made_before_scenes_existed(tmp_
     scoped = client.get(f"/api/motion/defaults?episode_id={episode_id}").json()
     assert scoped["sleep_prompt"] == client.get("/api/motion/defaults").json()["sleep_prompt"]
     assert scoped["sleep_prompt"]
+
+
+# --- 動作提示詞與關鍵幀場景的接縫（artifacts/spec.md 2026-09-06）---------
+#
+# 這一組全部是回歸測試。824eb3b 的四個環境預設按鈕與 suggest 端點都是整段
+# 覆寫寫死的模板，無論頁籤 1 挑了什麼場景，送給 Veo 的文字都宣稱狗趴平在
+# 室內咖啡館地板、外面有溫暖陽光。
+
+
+def _episode_with_scene(client, db, tmp_path, slug, scene):
+    """建一集、用指定的晶片場景送出關鍵幀任務，並核准一張關鍵幀。"""
+    episode = client.post(
+        "/api/episodes", json={"slug": slug, "title": slug}
+    ).json()
+    composed = client.post("/api/keyframes/compose", json={"scene": scene}).json()
+    resp = client.post(
+        f"/api/episodes/{episode['id']}/keyframes/generate",
+        json={"positive_prompt": composed["positive_prompt"], "scene": scene},
+    )
+    assert resp.status_code == 200, resp.text
+    kf_path = tmp_path / f"{slug}.png"
+    kf_path.write_bytes(b"fake-image")
+    asset_id = db.create_asset(
+        episode["id"], "keyframe", "shared",
+        source_prompt=composed["positive_prompt"],
+    )
+    db.transition_asset(
+        asset_id, expected_status="queued", expected_version=0,
+        status="approved", path=str(kf_path),
+    )
+    return episode
+
+
+_OUTDOOR_NIGHT = {
+    "venue": "lakeside", "aspect": "outdoor_seat", "season": "winter",
+    "weather": "snow", "time": "night", "pose": "curled",
+}
+
+
+def test_motion_presets_follow_the_episode_scene(tmp_path):
+    """驗收 1、2、3：四個環境主題按鈕不得寫死姿勢、地面、有窗、白天。"""
+    db, client = _client(tmp_path)
+    episode = _episode_with_scene(client, db, tmp_path, "ep-outdoor-night", _OUTDOOR_NIGHT)
+
+    data = client.get(f"/api/motion/defaults?episode_id={episode['id']}").json()
+    assert set(data["presets"]) == {
+        "nature_breeze", "rainy_window", "urban_sunset", "forest_woods"
+    }
+    pairs = [(data["sleep_prompt"], data["lookup_prompt"])]
+    for preset in data["presets"].values():
+        # 人類的產品文案不動
+        assert preset["label"] and preset["description"]
+        pairs.append((preset["sleep_prompt"], preset["lookup_prompt"]))
+
+    for sleep, lookup in pairs:
+        # 1. 姿勢與地面跟著晶片走（蜷睡的 lookup 是抬頭後把鼻子塞回毛裡，
+        #    措辭本來就與 sleep 不同——所以兩者分開驗，不是找同一個字）
+        assert "stays curled in the exact same pose" in sleep
+        assert "tucks its nose back into its fur" in lookup
+        for text in (sleep, lookup):
+            assert "worn stone terrace" in text
+            assert "lying flat on the cafe floor" not in text
+            # 2. 全戶外座位沒有窗
+            assert "window" not in text.lower()
+            # 3. 入夜不得出現日光措辭
+            assert "daylight" not in text.lower()
+            assert "sunlight" not in text.lower()
+            assert "the lamplight holds steady" in text
+
+
+def test_motion_presets_follow_a_daytime_indoor_scene(tmp_path):
+    """同一組按鈕換成室內白天，措辭必須跟著換——證明上一條不是靠寫死另一組字通過的。"""
+    db, client = _client(tmp_path)
+    episode = _episode_with_scene(
+        client, db, tmp_path, "ep-indoor-day",
+        {"venue": "forest_cabin", "aspect": "inside_glass", "time": "afternoon", "pose": "lying"},
+    )
+    data = client.get(f"/api/motion/defaults?episode_id={episode['id']}").json()
+    for text in [data["sleep_prompt"], data["presets"]["forest_woods"]["sleep_prompt"]]:
+        assert "wide plank floor" in text
+        assert "stays lying in the exact same pose" in text
+        assert "Beyond the glass," in text
+        assert "the daylight shifts almost imperceptibly" in text
+
+
+def test_suggest_prompts_uses_the_scene_not_keyword_matching(tmp_path):
+    """驗收 4：`"grain"`（每張關鍵幀提示詞結尾都有）裡含有 `"rain"`，
+    舊的關鍵字啟發法因此把每一個場地都判成下雨。現在改讀存好的選擇。"""
+    db, client = _client(tmp_path)
+    episode = _episode_with_scene(client, db, tmp_path, "ep-suggest", _OUTDOOR_NIGHT)
+
+    data = client.post(f"/api/episodes/{episode['id']}/motion/suggest-prompts").json()
+    assert data["source"] == "scene"
+    for text in (data["sleep_prompt"], data["lookup_prompt"]):
+        assert "worn stone terrace" in text
+        assert "raindrop" not in text.lower()
+        assert "window" not in text.lower()
+        # 場地是湖畔，推導出來的環境動態就該是湖
+        assert "lake surface" in text
+
+
+def test_motion_prompts_contain_no_one_way_motion(tmp_path):
+    """驗收 5：單向飛越畫面的鳥回不到第一幀，會直接推高 veo.seam_score，
+    也牴觸 MOTION_NEGATIVE_PROMPT 的 "new objects"。"""
+    db, client = _client(tmp_path)
+    episode = _episode_with_scene(client, db, tmp_path, "ep-birds", _OUTDOOR_NIGHT)
+    data = client.get(f"/api/motion/defaults?episode_id={episode['id']}").json()
+    texts = [data["sleep_prompt"], data["lookup_prompt"]]
+    for preset in data["presets"].values():
+        texts += [preset["sleep_prompt"], preset["lookup_prompt"]]
+    for text in texts:
+        assert "bird" not in text.lower()
+
+
+def test_scene_stale_flag_when_keyframe_prompt_was_hand_edited(tmp_path):
+    """稽核發現 H：手改頁籤 1 的文字、晶片沒動時，動作提示詞仍依晶片推導，
+    可能與畫面不符且毫無跡象——所以要主動講出來。"""
+    db, client = _client(tmp_path)
+    episode = client.post(
+        "/api/episodes", json={"slug": "ep-stale", "title": "stale"}
+    ).json()
+
+    # 照晶片原樣送出：不算 stale
+    composed = client.post("/api/keyframes/compose", json={"scene": _OUTDOOR_NIGHT}).json()
+    client.post(
+        f"/api/episodes/{episode['id']}/keyframes/generate",
+        json={"positive_prompt": composed["positive_prompt"], "scene": _OUTDOOR_NIGHT},
+    )
+    assert client.get(f"/api/motion/defaults?episode_id={episode['id']}").json()["scene_stale"] is False
+
+    # 手改文字、晶片不動：要標成 stale。直接 enqueue 而不再打一次
+    # keyframes/generate——前一個任務還在排隊，那個端點會擋 409（刻意的）。
+    db.enqueue_task(
+        episode["id"], "generate_keyframe",
+        payload={"positive_prompt": "a completely different hand written prompt",
+                 "scene": _OUTDOOR_NIGHT},
+    )
+    assert client.get(f"/api/motion/defaults?episode_id={episode['id']}").json()["scene_stale"] is True
+
+
+def test_motion_defaults_survive_an_unknown_stored_scene(tmp_path):
+    """有人改了 scene_presets.yaml 的選項 id，舊集數存的選擇就對不上了。
+    頁籤 2 必須還能開，不能整個 500。"""
+    db, client = _client(tmp_path)
+    episode = client.post(
+        "/api/episodes", json={"slug": "ep-legacy", "title": "legacy"}
+    ).json()
+    db.enqueue_task(
+        episode["id"], "generate_keyframe",
+        payload={"positive_prompt": "x", "scene": {"venue": "no_such_venue"}},
+    )
+    resp = client.get(f"/api/motion/defaults?episode_id={episode['id']}")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["sleep_prompt"]
+    # 「選項 id 對不上」不是「人類手改過提示詞」——不能顯示那句提示。
+    assert data["scene_stale"] is False

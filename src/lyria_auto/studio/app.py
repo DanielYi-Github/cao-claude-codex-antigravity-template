@@ -36,7 +36,6 @@ from .scene_composer import (
 from .stages import (
     KEYFRAME_NEGATIVE_PROMPT,
     default_keyframe_prompt,
-    default_motion_prompts,
 )
 
 WEB_ROOT = Path(__file__).resolve().parent / "web"
@@ -69,6 +68,51 @@ _NEXT_KIND = {
 # same shape and were already unreachable through this path for the same
 # reason).
 _NO_PER_ASSET_REJECT = {"keyframe", "loop_preview", "loop", "final"}
+
+# 頁籤 2 的四個環境主題按鈕。這裡**只有**環境動態子句——姿勢、地面、開口
+# 形式、光線全部由 scene_composer 從晶片選擇填，所以主題不再假設有窗、有湖
+# 或是白天（artifacts/spec.md「動作提示詞與關鍵幀場景的接縫」）。
+#
+# 每一句都必須可循環：原本 nature_breeze 有一句
+# "a few distant birds glide serenely across the sky and loop naturally"，
+# 但單向飛越畫面的鳥回不到第一幀，同時牴觸 Veo 的 last_frame 循環機制、
+# MOTION_NEGATIVE_PROMPT 的 "new objects"，也會推高 veo.seam_score。
+MOTION_THEMES: dict[str, dict[str, str]] = {
+    "nature_breeze": {
+        "label": "大自然微風與湖光 (Nature Breeze & Lake)",
+        "description": "微風吹拂綠樹枝葉、水面微波漣漪",
+        "clause": (
+            "a gentle breeze sways the foliage and greenery in a calm rhythmic "
+            "motion; slow ripples shimmer across the water."
+        ),
+    },
+    "rainy_window": {
+        "label": "窗外細雨 (Rainy Window)",
+        "description": "細雨緩慢滑落、濕潤綠葉微擺、水窪漣漪",
+        "clause": (
+            "raindrops trickle down in a slow steady rhythm; wet leaves sway "
+            "gently in the cool air; small ripples form on the puddles."
+        ),
+    },
+    "urban_sunset": {
+        "label": "城市街景晚霞 (Urban Sunset & Bokeh)",
+        "description": "街邊樹蔭輕擺、遠方虛焦光斑微弱呼吸",
+        "clause": (
+            "the distant street tree canopies sway subtly; blurred bokeh lights "
+            "of far-off traffic twinkle and breathe softly; a calm atmospheric "
+            "haze shifts gently."
+        ),
+    },
+    "forest_woods": {
+        "label": "林間微風 (Forest Woods)",
+        "description": "針葉樹梢輕晃、林間光柱微移、微塵光斑",
+        "clause": (
+            "tall pines and forest canopy sway with a steady natural "
+            "oscillation; soft light beams shift gently between the trunks; "
+            "dust motes drift slowly through the air."
+        ),
+    },
+}
 
 
 class CreateEpisodeRequest(BaseModel):
@@ -249,22 +293,40 @@ def create_app(
             _composer_cache.append(SceneComposer.from_root(config.root))
         return _composer_cache[0]
 
-    def _episode_motion_prompts(
-        episode_id: int, *, fallback: dict[str, str]
-    ) -> dict[str, str]:
-        """這一集的關鍵幀是用哪個場景生的，就回傳那個場景配套的動作提示詞。
-
-        來源是最後一次 generate_keyframe 任務的 payload——頁籤 1 用晶片組
-        場景時把 motion_prompts 一起存了進去。舊的集數（在這個功能之前生
-        的）payload 裡沒有這個鍵，就退回全域預設，行為跟以前一樣。
-        """
+    def _latest_keyframe_payload(episode_id: int) -> dict[str, Any]:
+        """最後一次 generate_keyframe 任務的 payload；沒有就回空 dict。"""
         for task in reversed(db.tasks_for_episode(episode_id)):
-            if task["task_type"] != "generate_keyframe" or not task["payload_json"]:
-                continue
-            stored = (json.loads(task["payload_json"]) or {}).get("motion_prompts")
-            if isinstance(stored, dict) and {"sleep", "lookup"} <= stored.keys():
-                return {"sleep": stored["sleep"], "lookup": stored["lookup"]}
-        return fallback
+            if task["task_type"] == "generate_keyframe" and task["payload_json"]:
+                return json.loads(task["payload_json"]) or {}
+        return {}
+
+    def _episode_scene(episode_id: int) -> dict[str, str] | None:
+        """這一集的關鍵幀是用哪組晶片選擇生的。
+
+        舊的集數（晶片功能之前生的）payload 裡沒有這個鍵，回 None，
+        compose_motion 會退回全域預設，行為跟以前一樣。
+        """
+        scene = _latest_keyframe_payload(episode_id).get("scene")
+        return scene if isinstance(scene, dict) and scene else None
+
+    def _scene_is_stale(episode_id: int) -> bool:
+        """關鍵幀的文字被手動改過，但晶片選擇沒跟著動。
+
+        此時動作提示詞仍會依 scene 推導，可能與畫面不符，而且不會有任何
+        跡象——所以要主動在頁籤 2 講出來，而不是安靜地填進去
+        （artifacts/spec.md 稽核發現 H）。
+        """
+        payload = _latest_keyframe_payload(episode_id)
+        scene, used = payload.get("scene"), payload.get("positive_prompt")
+        if not isinstance(scene, dict) or not used:
+            return False
+        try:
+            return _composer().compose(scene).keyframe_prompt.strip() != used.strip()
+        except SceneSelectionError:
+            # 存下來的選擇對不上目前的 scene_presets.yaml（有人改了選項 id）。
+            # 那不是「人類手改過提示詞」，回 True 會讓頁籤 2 顯示一句不正確
+            # 的說明，所以回 False。
+            return False
 
     @app.get("/api/episodes")
     def list_episodes() -> list[dict[str, Any]]:
@@ -551,46 +613,68 @@ def create_app(
 
     @app.get("/api/motion/defaults")
     def motion_defaults(episode_id: int | None = None) -> dict[str, Any]:
-        """Return the default motion prompts and dynamic environmental presets for Tab 2.
+        """頁籤 2 的預設動作提示詞，以及四個環境主題按鈕的內容。
 
-        帶 episode_id 時會優先回傳「這一集的關鍵幀實際用的那個場景」配套的
-        動作提示詞。少了這一步，人在頁籤 1 用晶片挑了湖畔露台，頁籤 2 仍會
-        預填室內地板的文字，等於餵給 FLF2V/Veo 一張與文字互相矛盾的起始幀。
+        帶 episode_id 時，全部依「這一集的關鍵幀實際用的那組晶片選擇」組出
+        來。四個主題只覆寫**環境動態**那一段，姿勢／地面／開口／光線一律由
+        場景推導——824eb3b 的按鈕是整段覆寫寫死模板，無論選了什麼都宣稱狗
+        趴平在室內地板、外面有溫暖陽光（artifacts/spec.md「動作提示詞與關鍵
+        幀場景的接縫」A、C、D、E）。
         """
-        motion = default_motion_prompts(config)
-        if episode_id is not None:
-            motion = _episode_motion_prompts(episode_id, fallback=motion)
+        scene = _episode_scene(episode_id) if episode_id is not None else None
+        composer = _composer()
+        try:
+            base = composer.compose_motion(scene)
+            presets = {
+                key: {
+                    "label": theme["label"],
+                    "description": theme["description"],
+                    **composer.compose_motion(scene, env_clause=theme["clause"]),
+                }
+                for key, theme in MOTION_THEMES.items()
+            }
+        except SceneSelectionError:
+            # 存下來的選擇對不上目前的 scene_presets.yaml（有人改了選項 id）。
+            # 退回全域預設，而不是讓整個頁籤 2 開不起來。
+            base = composer.compose_motion(None)
+            presets = {
+                key: {
+                    "label": theme["label"],
+                    "description": theme["description"],
+                    **composer.compose_motion(None, env_clause=theme["clause"]),
+                }
+                for key, theme in MOTION_THEMES.items()
+            }
+            scene = None
         return {
-            "sleep_prompt": motion["sleep"],
-            "lookup_prompt": motion["lookup"],
+            "sleep_prompt": base["sleep"],
+            "lookup_prompt": base["lookup"],
             "presets": {
-                "nature_breeze": {
-                    "label": "大自然微風與湖光 (Nature Breeze & Lake)",
-                    "description": "微風吹拂綠樹枝葉、湖面微波漣漪、天邊鳥群滑翔",
-                    "clause": "Outside the large window, a gentle mountain breeze softly sways the tree foliage and lush greenery in a calm, rhythmic motion; subtle ripples shimmer softly across the calm lake water; a few distant birds glide peacefully across the sky; warm sunlight dapples gently across the room.",
-                },
-                "rainy_window": {
-                    "label": "窗外細雨 (Rainy Window)",
-                    "description": "細雨水珠在玻璃窗上緩慢滑落、戶外濕潤綠葉微擺",
-                    "clause": "Outside the glass window, gentle raindrops trickle down the glass pane in a slow rhythmic motion; wet tree leaves sway gently in the cool breeze; subtle ripples form on outdoor puddles; warm interior reflections glow softly against the misty window.",
-                },
-                "urban_sunset": {
-                    "label": "城市街景晚霞 (Urban Sunset & Bokeh)",
-                    "description": "街邊樹蔭輕擺、遠方車流虛焦光斑微弱呼吸",
-                    "clause": "Through the picture window, distant street tree canopies sway subtly; blurred bokeh lights of distant city traffic twinkle and breathe softly in the background; calm urban atmospheric haze shifts gently under the warm sunset sky.",
-                },
-                "forest_woods": {
-                    "label": "林間微風 (Forest Woods)",
-                    "description": "針葉樹梢輕晃、林間光柱微移、微塵光斑",
-                    "clause": "Beyond the panoramic window, tall pine trees and forest canopy sway with a steady, natural oscillation; soft light beams through the trees shift gently; subtle dust motes float peacefully in the warm sunbeams.",
-                },
+                key: {
+                    "label": item["label"],
+                    "description": item["description"],
+                    "sleep_prompt": item["sleep"],
+                    "lookup_prompt": item["lookup"],
+                }
+                for key, item in presets.items()
             },
+            "scene": scene,
+            "scene_stale": _scene_is_stale(episode_id) if episode_id is not None else False,
         }
 
     @app.post("/api/episodes/{episode_id}/motion/suggest-prompts")
     def suggest_motion_prompts(episode_id: int) -> dict[str, Any]:
-        """Analyze the episode's approved keyframe image and/or prompt to
-        dynamically synthesize environmental motion prompts tailored to the scene."""
+        """看一眼已核准的關鍵幀，替這一集寫一段貼合畫面的環境動態。
+
+        姿勢、地面、開口、光線**不經過這裡**——那四樣由 compose_motion 從
+        晶片選擇填。這個端點只負責產出環境動態子句。
+
+        原本的實作在沒有 Gemini 金鑰時用關鍵字比對猜場景，而
+        `"grain"`（木紋，每張關鍵幀提示詞的結尾都有）裡面含有 `"rain"`，
+        於是每一個場地都被判成下雨、city/forest 兩個分支永遠到不了。整段
+        啟發法已刪除：這一集用了哪個場景是存好的事實，不需要回頭去猜自己
+        剛產生的字串。
+        """
         episode = db.episode(episode_id)
         if episode is None:
             raise HTTPException(404, "episode not found")
@@ -603,11 +687,12 @@ def create_app(
 
         keyframe = approved_keyframes[-1]
         kf_path = Path(keyframe["path"]) if keyframe["path"] else None
-        kf_prompt = (keyframe["source_prompt"] or "").lower()
+        scene = _episode_scene(episode_id)
 
-        # Try multimodal vision analysis via Gemini if key is configured
+        env_clause = None
+        scene_detected = "依頁籤 1 的場景選擇推導"
+        source = "scene"
         api_key = credential.get() or os.getenv("GEMINI_API_KEY")
-        vision_result = None
         if api_key and kf_path and kf_path.is_file():
             try:
                 from google import genai
@@ -615,11 +700,16 @@ def create_app(
                 client = genai.Client(api_key=api_key)
                 with PILImage.open(kf_path) as pil_img:
                     vision_prompt = (
-                        "Analyze this cafe interior image, focusing on the window view (nature, lake, mountains, trees, rain, or city). "
-                        "Determine what natural, physically plausible ambient motions (such as trees swaying in gentle breeze, water ripples, bird flight, raindrops, light shifts) "
-                        "should occur to make this a living, breathing scene in an 8-second seamless loop. "
-                        "Return ONLY a JSON object with this structure: "
-                        '{"scene_summary": "<brief scene description>", "environmental_motion": "<concise English description of ambient motions that loop seamlessly>"}'
+                        "Look at this photograph of a cafe with a chow chow dog. It may be "
+                        "indoors behind glass, on a half-open terrace, or fully outdoors. "
+                        "Describe ONLY the ambient environmental motion that could plausibly "
+                        "occur in an 8-second seamless loop of this exact scene -- foliage, "
+                        "water, weather, drifting light. Every motion must return to its "
+                        "starting state, so do not include anything that crosses the frame "
+                        "one way (birds, people, vehicles). Do not describe the dog, its pose, "
+                        "the furniture, the camera, or the lighting direction. "
+                        'Return ONLY JSON: {"scene_summary": "<brief>", '
+                        '"environmental_motion": "<one or two clauses, ending with a period>"}'
                     )
                     resp = client.models.generate_content(
                         model="gemini-2.0-flash",
@@ -628,74 +718,23 @@ def create_app(
                     text = (resp.text or "").strip()
                     text = text.removeprefix("```json").removesuffix("```").strip()
                     parsed = json.loads(text)
-                    env_motion = parsed.get("environmental_motion", "").strip()
-                    if env_motion:
-                        vision_result = {
-                            "scene_detected": parsed.get("scene_summary", "AI 視覺辨識環境"),
-                            "env_motion": env_motion,
-                            "source": "gemini-vision",
-                        }
+                    candidate = (parsed.get("environmental_motion") or "").strip()
+                    if candidate:
+                        env_clause = candidate
+                        scene_detected = parsed.get("scene_summary") or "AI 視覺辨識環境"
+                        source = "gemini-vision"
             except (ImportError, OSError, ValueError, RuntimeError) as exc:
-                logger.debug("Vision prompt analysis fallback to heuristic: %s", exc)
+                logger.debug("Vision prompt analysis fallback to scene selection: %s", exc)
 
-        if vision_result is None:
-            # Heuristic detection based on keyframe prompt keywords
-            if any(w in kf_prompt for w in ("rain", "raindrop", "storm", "wet")):
-                scene_detected = "細雨咖啡館 (Rainy Cafe)"
-                env_motion = (
-                    "Outside the glass window, gentle raindrops trickle down the glass pane in a slow rhythmic motion; "
-                    "wet tree leaves sway gently in the cool breeze; subtle ripples form on outdoor puddles; "
-                    "warm interior reflections glow softly against the misty window."
-                )
-            elif any(w in kf_prompt for w in ("city", "street", "urban", "skyline", "traffic")):
-                scene_detected = "城市街景與天際線 (City View)"
-                env_motion = (
-                    "Through the picture window, distant street tree canopies sway subtly; "
-                    "blurred bokeh lights of distant city traffic twinkle and breathe softly in the background; "
-                    "calm urban atmospheric haze shifts gently under the warm sunset sky."
-                )
-            elif any(w in kf_prompt for w in ("forest", "pines", "woods", "trees")):
-                scene_detected = "森林與林間微風 (Forest Woods)"
-                env_motion = (
-                    "Beyond the panoramic window, tall pine trees and forest canopy sway with a steady, natural oscillation; "
-                    "soft light beams through the trees shift gently; subtle dust motes float peacefully in the warm sunbeams."
-                )
-            else:
-                scene_detected = "自然湖泊與山景微風 (Nature Lake & Breeze)"
-                env_motion = (
-                    "Outside the large window, a gentle mountain breeze softly sways the tree foliage and natural greenery "
-                    "with a calm rhythmic motion; subtle ripples shimmer softly across the calm lake water; "
-                    "a few distant birds glide serenely across the sky and loop naturally; soft sunlight dapples gently across the room."
-                )
-            vision_result = {
-                "scene_detected": scene_detected,
-                "env_motion": env_motion,
-                "source": "heuristic",
-            }
-
-        env = vision_result["env_motion"]
-        sleep_prompt = (
-            f"A continuous seamless 8-second loop video based on the image. The fluffy chow chow dog remains lying flat on the cafe floor "
-            f"in the exact same pose throughout the clip, only its tail wags gently a few times and its chest and back rise and fall slowly with calm breathing, "
-            f"fur shifting subtly. Natural environmental dynamics: {env} Steam continues curling gently from the coffee mug on the table; warm daylight shifts almost imperceptibly. "
-            f"The owner stays completely out of frame throughout, only the chair, laptop, and mug are visible. "
-            f"The dog's head and body position and all environmental elements at the end of the clip match the very first frame seamlessly. "
-            f"No camera movement, no scene change, no new objects, smooth continuous loop returning to the same composition, photorealistic, physically plausible motion"
-        )
-        lookup_prompt = (
-            f"A continuous seamless 8-second loop video based on the image. The fluffy chow chow dog is lying flat on the cafe floor. "
-            f"Partway through the clip, the dog slowly lifts its head up from its front paws and turns to glance toward the empty chair and table where its owner would be sitting, "
-            f"holds the glance for a brief moment, then gently lowers its head back down onto its front paws and closes its eyes, returning to the exact same resting pose as the very first frame. "
-            f"Natural environmental dynamics: {env} Steam rises from the coffee mug; soft daylight shifting gently. "
-            f"The owner remains completely out of frame throughout, only the chair, laptop, and steaming mug are visible. "
-            f"No camera movement, no scene change, no new objects, smooth continuous loop where the end frame connects seamlessly back to the start frame, photorealistic, physically plausible motion"
-        )
-
+        try:
+            prompts = _composer().compose_motion(scene, env_clause=env_clause)
+        except SceneSelectionError:
+            prompts = _composer().compose_motion(None, env_clause=env_clause)
         return {
-            "scene_detected": vision_result["scene_detected"],
-            "source": vision_result["source"],
-            "sleep_prompt": sleep_prompt,
-            "lookup_prompt": lookup_prompt,
+            "scene_detected": scene_detected,
+            "source": source,
+            "sleep_prompt": prompts["sleep"],
+            "lookup_prompt": prompts["lookup"],
         }
 
     @app.post("/api/episodes/{episode_id}/motion/assemble-preview")

@@ -43,6 +43,12 @@ axes:
   # 景，參考歐洲與日本咖啡館：日式緣側、北歐田野、阿爾卑斯露台。
   # paris_street 只做風格（Haussmann 石造街屋、鋅皮屋頂、鍛鐵陽台），
   # 不放任何可辨識地標——沿用專案既有的「虛構、無可辨識地點」商用規則。
+  #
+  # view 是**靜態**描述，給關鍵幀用；motion 是**這個景裡有什麼在動**，
+  # 給 8 秒循環的動作提示詞用。兩者刻意分開存：從 view 的句子去切出
+  # 「湖」「森林」這種名詞，正是 app.py 那個「grain 裡有 rain」啟發法
+  # 出錯的原因。motion 的每一句都必須可循環——會單向飛越畫面的東西
+  # （鳥、路過的人車）不能寫進去，否則最後一幀回不到第一幀。
   venue:
     label_zh: 場地
     options:
@@ -50,46 +56,58 @@ axes:
         zh: 森林木屋
         en: A timber cabin cafe
         view: full-height glass onto tall conifers and moss
+        motion: the conifer branches sway with a slow steady oscillation and the moss below stays still
       - id: lakeside
         zh: 湖畔
         en: A lakeside cafe
         view: glass onto a still lake and low mountains beyond
+        motion: the lake surface shimmers with slow ripples and the far ridgeline holds perfectly still
       - id: sea_cliff
         zh: 海崖
         en: A clifftop cafe
         view: open ocean and a low horizon below
+        motion: low swells roll in and settle against the rocks in a steady rhythm, the horizon unmoving
       - id: alpine_terrace
         zh: 山中露台
         en: An alpine cafe under a timber eave
         view: a deep valley and layered ridgelines
+        motion: thin cloud drifts slowly along the ridgelines and the grass on the slope stirs faintly
       - id: engawa
         zh: 日式緣側
         en: An old Japanese house cafe on its engawa veranda
         view: a moss garden with stepping stones and a maple
+        motion: the maple leaves stir gently and the moss garden below holds completely still
       - id: nordic_meadow
         zh: 北歐田野
         en: A low Nordic timber cafe
         view: a picture window onto meadow and distant fjord
+        motion: the meadow grass ripples in slow waves and the distant fjord water shifts almost imperceptibly
       - id: orchard
         zh: 果園露台
         en: A stone farmhouse cafe
         view: an open terrace over rows of fruit trees
+        motion: the fruit tree rows sway gently in a light wind, leaves turning over
       - id: riverside
         zh: 河畔石橋
         en: A cafe in an old stone river town
         view: a slow river, a stone bridge, plane trees
+        motion: the river slides past in a slow steady current and the plane tree leaves stir above it
       - id: paris_street
         zh: 巴黎街角
         en: A corner cafe with tall French windows
         view: a Haussmann stone street, zinc roofs, iron balconies
+        motion: the plane tree canopy stirs and distant traffic drifts softly out of focus
       - id: greenhouse
         zh: 溫室植物
         en: A glasshouse cafe under a glazed roof
         view: a garden pressing against the glass
+        motion: the garden foliage presses and sways gently against the glass
 
   # --- 視野 -----------------------------------------------------------
   # 決定「室內看出去」還是「人就坐在戶外」，同時決定狗趴在什麼材質上
   # （surface 會代入姿勢與接地兩段）。
+  # aperture 是動作提示詞裡環境動態子句的開頭：outdoor_seat 根本沒有窗，
+  # 寫成 "Outside the large window" 就是在對影片模型說謊。
   aspect:
     label_zh: 視野
     options:
@@ -97,14 +115,17 @@ axes:
         zh: 落地窗內側
         en: Framed from inside the glass.
         surface: wide plank floor
+        aperture: Beyond the glass,
       - id: half_open
         zh: 半開放露台
         en: The wall folded open to the terrace.
         surface: plank floor at the open threshold
+        aperture: Past the folded-open wall,
       - id: outdoor_seat
         zh: 全戶外座位
         en: The table outdoors, only the eave overhead.
         surface: worn stone terrace
+        aperture: Around the open terrace,
 
   # --- 季節：影響植被與太陽路徑高度 -----------------------------------
   season:
@@ -137,35 +158,36 @@ axes:
         en: Clear sky, hard-edged shadows.
         night: Clear night sky.
         diffuse: false
-        ambient: steam keeps curling from the mug and dust drifts in the sunlight
+        ambient: dust drifts slowly through the sunbeam
+        ambient_night: the air stays clear and completely still
       - id: thin_cloud
         zh: 薄雲
         en: Thin high cloud, soft-edged shadows.
         night: Thin high cloud.
         diffuse: false
-        ambient: steam keeps curling from the mug and a leaf outside shifts slightly
+        ambient: a leaf outside shifts slightly
       - id: overcast
         zh: 陰
         en: Flat overcast, shadowless, muted colour.
         night: Flat overcast, no moon.
         diffuse: true
-        ambient: steam keeps curling from the mug and the air stays still
+        ambient: the air stays completely still
       - id: rain
         zh: 雨
         en: Steady rain sheeting on the glass, dark saturated surfaces.
         diffuse: true
-        ambient: rain keeps running down the glass and steam curls from the mug
+        ambient: rain keeps falling in a steady curtain
       - id: fog
         zh: 霧
         en: Fog, the view fading with distance.
         diffuse: true
-        ambient: the fog outside drifts slowly and steam curls from the mug
+        ambient: the fog drifts slowly past
       - id: snow
         zh: 雪
         en: Snow falling, everything outside bright with blue shadows.
         night: Snow falling, lit by the windows.
         diffuse: true
-        ambient: snow keeps falling slowly outside and steam curls from the mug
+        ambient: snow keeps falling slowly and evenly
 
   # --- 時間 -----------------------------------------------------------
   # sun = 有直射日光時的措辭；diffuse = 天氣是陰/雨/霧/雪時的措辭。

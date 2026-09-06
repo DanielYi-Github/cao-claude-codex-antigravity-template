@@ -162,6 +162,57 @@ class SceneComposer:
                 raise SceneSelectionError(rule.get("message") or f"{rule['option']} 組合不合法")
         return chosen
 
+    def _motion_prompts(
+        self,
+        *,
+        pose: dict[str, Any],
+        aspect: dict[str, Any],
+        venue: dict[str, Any],
+        weather: dict[str, Any],
+        after_dark: bool,
+        env_clause: str | None,
+    ) -> dict[str, str]:
+        """sleep / lookup 兩支動作提示詞。
+
+        env_clause 為 None 時由場景推導（場地在動的東西 + 這個天氣的環境
+        動態）。呼叫端只有在人類明確按下環境預設按鈕、或 Gemini 視覺辨識
+        真的看懂了畫面時才覆寫它——姿勢、地面、開口、光線永遠不讓呼叫端
+        覆寫，那正是這次要修的東西。
+        """
+        ambient = weather["ambient"]
+        if after_dark:
+            ambient = weather.get("ambient_night", ambient)
+        clause = env_clause or f"{venue['motion']}; {ambient}."
+        shared = {
+            "surface": aspect["surface"],
+            "aperture": aspect["aperture"],
+            "env_clause": _tidy(clause),
+            "light_hold": _LIGHT_HOLD_NIGHT if after_dark else _LIGHT_HOLD_DAY,
+        }
+        return {
+            "sleep": _motion_prompt(behaviour=pose["hold"], **shared),
+            "lookup": _motion_prompt(behaviour=pose["glance"], **shared),
+        }
+
+    def compose_motion(
+        self, selection: dict[str, str] | None = None, *, env_clause: str | None = None
+    ) -> dict[str, str]:
+        """只要動作提示詞時的入口（頁籤 2 的預設按鈕與視覺辨識端點）。
+
+        走的是跟 compose() 完全相同的推導，所以不可能出現「按鈕產出的字
+        跟關鍵幀當初存的那組不一致」——不維護兩套模板。
+        """
+        chosen = self.resolve(selection)
+        time_opt = self._option("time", chosen["time"])
+        return self._motion_prompts(
+            pose=self._option("pose", chosen["pose"]),
+            aspect=self._option("aspect", chosen["aspect"]),
+            venue=self._option("venue", chosen["venue"]),
+            weather=self._option("weather", chosen["weather"]),
+            after_dark=bool(time_opt.get("night")),
+            env_clause=env_clause,
+        )
+
     def compose(self, selection: dict[str, str] | None = None) -> ComposedScene:
         chosen = self.resolve(selection)
         venue = self._option("venue", chosen["venue"])
@@ -207,10 +258,10 @@ class SceneComposer:
             )
         )
 
-        motion_prompts = {
-            "sleep": _motion_prompt(pose["hold"], surface, weather["ambient"]),
-            "lookup": _motion_prompt(pose["glance"], surface, weather["ambient"]),
-        }
+        motion_prompts = self._motion_prompts(
+            pose=pose, aspect=aspect, venue=venue, weather=weather,
+            after_dark=after_dark, env_clause=None,
+        )
 
         estimated = estimate_t5_tokens(keyframe)
         warnings: list[str] = []
@@ -240,13 +291,37 @@ def _tidy(text: str) -> str:
     return " ".join(text.split())
 
 
-def _motion_prompt(behaviour: str, surface: str, ambient: str) -> str:
-    """動作提示詞。故意比關鍵幀短——WAN/Veo 要的是「什麼在動」，不是把
-    整個場景再描述一遍；起始幀本身已經帶著場景資訊了。結尾必須明講
-    「最後一幀對齊第一幀」，64 秒巨集循環靠這個接縫。"""
+# 白天／入夜各自的「光線幾乎不變」措辭。這不是可以自由選的一軸——動作
+# 提示詞裡寫死 "warm daylight" 而畫面是雪夜，就是 824eb3b 那五個按鈕的
+# 錯誤（artifacts/spec.md「動作提示詞與關鍵幀場景的接縫」C）。
+_LIGHT_HOLD_DAY = "the daylight shifts almost imperceptibly"
+_LIGHT_HOLD_NIGHT = "the lamplight holds steady"
+
+
+def _motion_prompt(
+    *, behaviour: str, surface: str, aperture: str, env_clause: str, light_hold: str
+) -> str:
+    """一支 8 秒循環的動作提示詞。
+
+    措辭沿用人類在 824eb3b 為 Veo 寫的模板——刻意比關鍵幀長。關鍵幀那邊
+    的 256 token 上限是 FLUX.1-schnell 的訓練長度，Veo 與 WAN 的 umT5 都
+    沒有那個限制，把影像端的預算硬套到影片端只會白白丟掉可用的描述。
+
+    真正的重點是：姿勢、地面、開口、光線**一律由場景填**，不寫死。原本
+    的模板無論晶片選什麼都宣稱狗趴平在室內咖啡館地板、外面有溫暖陽光，
+    等於餵給 Veo 一張與文字互相矛盾的起始幀。
+
+    結尾必須明講「最後一幀對齊第一幀」，64 秒巨集循環靠這個接縫，
+    studio/veo.py 的 seam_score 也是照這個前提在量。
+    """
     return _tidy(
-        f"A seamless 8-second loop from this image. The chow chow on the {surface} "
-        f"{behaviour}. Everything else holds still: {ambient}. The last frame matches "
-        "the first exactly. Locked-off camera, no scene change, no new objects, "
-        "photorealistic, physically plausible motion."
+        f"A continuous seamless 8-second loop video based on the image. "
+        f"The fluffy chow chow dog on the {surface} {behaviour}. "
+        f"Natural environmental dynamics: {aperture} {env_clause} "
+        f"Steam continues curling gently from the mug on the table; {light_hold}. "
+        f"The owner stays completely out of frame throughout, only the chair, "
+        f"laptop, and mug are visible. The dog and every environmental element at "
+        f"the end of the clip match the very first frame seamlessly. No camera "
+        f"movement, no scene change, no new objects, smooth continuous loop "
+        f"returning to the same composition, photorealistic, physically plausible motion."
     )

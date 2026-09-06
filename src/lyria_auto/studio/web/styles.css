@@ -81,3 +81,7 @@ button.btn-sm { padding: 0.35rem 0.7rem; font-size: 0.85rem; border-radius: 4px;
 
 .field-hint { font-size: 0.78rem; color: #6b7280; margin: 0.35rem 0 0; line-height: 1.4; }
 .field-hint.warn { color: #b45309; }
+/* .notice 預設是紅色（驗證錯誤）。.warn 用在「功能降級但頁面仍可用」的
+   情況，例如讀不到場景預設選項時仍可手動編輯提示詞——琥珀色，與其他
+   提醒一致，同時當作「這段訊息可以被清掉」的狀態標記。 */
+.notice.warn { color: #b45309; }

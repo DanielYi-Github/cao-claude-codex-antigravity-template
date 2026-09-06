@@ -94,10 +94,38 @@ cropped dog, partially missing dog, dog cut off by frame, out of frame
 
 flat matte painting sky, obvious green screen backdrop, screensaver wallpaper scenery, framed picture or poster on the wall showing the outdoor view, fake-looking window, oversaturated postcard-style view, identifiable real-world landmark visible through window"""
 
-# node 6 in cafe-flf2v-wan22-mps.json: same "inert under CFG=1" caveat as above.
+# node 6 in cafe-flf2v-wan22-mps.json, and the negative_prompt sent to Veo in
+# _start_veo. These two consumers do NOT behave the same way, which is the
+# whole reason this constant is worth thinking about:
+#
+#   - WAN path: nodes 14/15 are KSamplerAdvanced at cfg=1, steps=4 (checked in
+#     comfyui-assets/workflows/api/cafe-flf2v-wan22-mps.json), so this text is
+#     just as inert there as KEYFRAME_NEGATIVE_PROMPT is at CFG=1.
+#   - Veo path: the Gemini video API takes negative_prompt as a real argument
+#     and honours it. This is the one place in the pipeline where a negative
+#     prompt actually does something.
+#
+# The dog-behaviour exclusions below used to live only in
+# KEYFRAME_NEGATIVE_PROMPT, i.e. on the one side that is inert everywhere, and
+# were absent from the side Veo actually reads (artifacts/spec.md, audit
+# finding G). Motion is also where they matter most: a still image cannot show
+# the dog standing up mid-clip, but 8 seconds of video can, and that breaks the
+# loop seam outright.
+#
+# Nothing here may contradict a positive prompt the composer can emit. That is
+# why "passing vehicles" is absent: MOTION_THEMES["urban_sunset"] and the
+# paris_street venue both describe distant traffic as out-of-focus bokeh, which
+# is static and loopable. test_motion_prompts_never_contradict_the_scene keeps
+# the two sides from drifting apart.
 MOTION_NEGATIVE_PROMPT = (
+    "dog standing up, dog getting up, dog rising, walking dog, running dog, "
+    "jumping dog, dog changing position, dog climbing on furniture, dog leaving "
+    "the frame, barking, open mouth barking, hyperactive dog, exaggerated tail "
+    "movement, large body motion, multiple dogs, second dog, duplicate dog, "
+    "human visible, person visible, person entering frame, "
     "camera shake, zoom, pan, fast camera movement, scene transition, flicker, strobing, "
     "frozen motion, static motion, object morphing, changing layout, new objects, "
+    "birds flying across frame, "
     "disappearing objects, warped geometry, duplicate objects, blurry, low quality, "
     "worst quality, oversaturated, overexposed, underexposed, cropped, out of frame"
 )
